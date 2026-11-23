@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Claude Account Switcher</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --text: #1d1c1a; --muted: #6b6760; --border: #e2dfd8;
+    --accent: #c96442; --accent-text: #ffffff; --active-bg: #fbf1ec;
+    --ok-bg: #eaf5ec; --ok-border: #9bcfa5; --err-bg: #fbeceb; --err-border: #e3a29c;
+    --note-bg: #fff7e0; --note-border: #ecd48a;
+    --track: #ebe8e1; --bar: #5b8f6a; --bar-warn: #d39a2c; --bar-full: #c8463b; --on: #3f8a55;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191817; --card: #232220; --text: #ecebe8; --muted: #a29e96; --border: #3a3835;
+      --accent: #d97757; --accent-text: #1a1311; --active-bg: #2e2420;
+      --ok-bg: #1d2b20; --ok-border: #3f7a4b; --err-bg: #301e1c; --err-border: #8a4038;
+      --note-bg: #2c2717; --note-border: #6b5a22;
+      --track: #34322f; --bar: #6aa97c; --bar-warn: #e0a940; --bar-full: #e0645a; --on: #6bc285;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 600px; margin: 0 auto; padding: 32px 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .note { background: var(--note-bg); border: 1px solid var(--note-border); border-radius: 10px;
+          padding: 10px 14px; margin-bottom: 16px; font-size: 14px; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .panel-title { font-weight: 600; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: 1px; }
+  .dot.on { background: var(--on); }
+  .panel p { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; }
+  .card.active { border-color: var(--accent); background: var(--active-bg); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .top { display: flex; align-items: center; gap: 12px; }
+  .info { flex: 1; min-width: 0; }
+  .name { font-weight: 600; font-size: 16px; }
+  .email { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  .pill { display: inline-block; font-size: 12px; border: 1px solid var(--border); border-radius: 999px;
+          padding: 0 8px; margin-left: 6px; color: var(--muted); vertical-align: 1px; font-weight: 500; }
+  .pill.warn { color: var(--bar-full); border-color: var(--bar-full); }
+  .badge { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .usage { margin-top: 10px; display: grid; gap: 6px; }
+  .meter { display: grid; grid-template-columns: 110px 1fr 44px; align-items: center; gap: 10px; font-size: 13px; }
+  .meter .lbl { color: var(--muted); }
+  .meter .pct { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .track { position: relative; height: 8px; background: var(--track); border-radius: 999px; overflow: hidden; }
+  .fill { height: 100%; background: var(--bar); border-radius: 999px; }
+  .fill.warn { background: var(--bar-warn); } .fill.full { background: var(--bar-full); }
+  .tick { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--muted); opacity: .6; }
+  .resets { grid-column: 2 / 4; margin-top: -4px; font-size: 12px; color: var(--muted); }
+  .usage-note { font-size: 12px; color: var(--muted); }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer;
+           background: var(--accent); color: var(--accent-text); white-space: nowrap; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); font-weight: 500; padding: 6px 12px; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 12px; flex-wrap: wrap; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #result { display: none; margin-top: 12px; border-radius: 10px; padding: 10px 14px; border: 1px solid; }
+  #result.ok { display: block; background: var(--ok-bg); border-color: var(--ok-border); }
+  #result.err { display: block; background: var(--err-bg); border-color: var(--err-border); }
+  #result strong { display: block; margin-bottom: 4px; }
+  #result pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  ul.events { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+  ul.events li { padding: 6px 0; border-top: 1px solid var(--border); display: grid; grid-template-columns: 92px 1fr; gap: 8px; }
+  ul.events li:first-child { border-top: 0; }
+  ul.events .t { color: var(--muted); font-variant-numeric: tabular-nums; }
+  ul.events li.error .m { color: var(--bar-full); }
+  ul.events li.switch .m { font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <div class="head">
+    <div>
+      <h1>Claude account</h1>
+      <p class="sub">Which subscription Claude Code / T3 Code uses on this VM.</p>
+    </div>
+    <button class="ghost" id="logout" type="button">Sign out</button>
+  </div>
+
+  <div class="note">
+    A switch changes the login for the whole VM. Claude Code re-reads its login file when it changes,
+    so running T3 threads move to the new account on their next request, and new threads start on it.
+  </div>
+
+  <div class="panel" id="auto">
+    <div class="panel-head">
+      <span class="panel-title"><span class="dot" id="auto-dot"></span><span id="auto-state">Auto-switch</span></span>
+      <button class="ghost" id="auto-toggle" type="button" disabled>…</button>
+    </div>
+    <p id="auto-desc"></p>
+  </div>
+
+  <div id="accounts"><p class="muted">Loading…</p></div>
+
+  <div id="result"><strong></strong><pre></pre></div>
+
+  <div class="row">
+    <span class="muted" id="updated"></span>
+    <span>
+      <button class="ghost" id="check" type="button">Check usage now</button>
+      <button class="ghost" id="refresh" type="button">Refresh</button>
+    </span>
+  </div>
+
+  <h2>Recent activity</h2>
+  <ul class="events" id="events"><li><span class="t"></span><span class="m muted">Nothing yet.</span></li></ul>
+
+  <div class="row">
+    <span class="muted">Lost a device? This signs out every browser, including this one.</span>
+    <button class="ghost" id="logout-all" type="button">Sign out everywhere</button>
+  </div>
+</main>
+<script>
+  const $ = (s) => document.querySelector(s);
+  let busy = false;
+  let last = null;
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function rel(ts) {
+    const s = Math.round(ts - Date.now() / 1000), a = Math.abs(s);
+    const txt = a < 60 ? `${a}s` : a < 3600 ? `${Math.round(a / 60)} min`
+      : a < 86400 ? `${Math.floor(a / 3600)}h ${Math.round((a % 3600) / 60)}m` : `${Math.floor(a / 86400)}d ${Math.round((a % 86400) / 3600)}h`;
+    return s >= 0 ? `in ${txt}` : `${txt} ago`;
+  }
+  function when(ts) {
+    const d = new Date(ts * 1000), today = new Date().toDateString() === d.toDateString();
+    return today ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function showResult(ok, title, text) {
+    const r = $("#result");
+    r.className = ok ? "ok" : "err";
+    r.querySelector("strong").textContent = title;
+    r.querySelector("pre").textContent = text || "";
+  }
+
+  function meter(w, threshold) {
+    const row = el("div", "meter");
+    const u = w.reset ? 0 : w.u;
+    const fill = el("div", "fill" + (u >= threshold ? " full" : u >= threshold - 20 ? " warn" : ""));
+    fill.style.width = Math.min(100, u) + "%";
+    const track = el("div", "track");
+    const tick = el("div", "tick");
+    tick.style.left = threshold + "%";
+    tick.title = `auto-switch at ${threshold}%`;
+    track.append(fill, tick);
+    row.append(el("span", "lbl", w.label), track, el("span", "pct", Math.round(u) + "%"));
+    if (w.resets_at) {
+      const t = Date.parse(w.resets_at) / 1000;
+      row.append(el("span", "resets", w.reset ? `reset ${rel(t)} (was ${Math.round(w.u)}%)` : `resets ${rel(t)} · ${when(t)}`));
+    }
+    return row;
+  }
+
+  function render(data) {
+    last = data;
+    const auto = data.auto || {};
+    const threshold = auto.threshold ?? 90;
+    const prio = (auto.priority || []).join(" → ");
+
+    $("#auto-dot").className = "dot" + (auto.enabled ? " on" : "");
+    $("#auto-state").textContent = auto.enabled ? "Auto-switch is on" : "Auto-switch is off";
+    const t = $("#auto-toggle");
+    t.textContent = auto.enabled ? "Turn off" : "Turn on";
+    t.disabled = busy;
+    $("#auto-desc").textContent = auto.enabled
+      ? `At ${threshold}% of any limit (5-hour or weekly), it moves to the next account. Order: ${prio}, so it returns to the first one once its limit resets. Checks every ${auto.poll || 60}s` +
+        (auto.last_check ? `; last check ${rel(auto.last_check)}.` : ".")
+      : `Accounts stay as they are. Turn it on to switch at ${threshold}% of a limit (order: ${prio}).`;
+
+    const list = $("#accounts");
+    list.replaceChildren();
+    const accs = data.accounts || [];
+    if (data.error) list.append(el("p", "muted", "Could not list accounts: " + data.error));
+    else if (!accs.length) list.append(el("p", "muted", "No saved accounts. Use `claude-account login <name>` on the VM."));
+    else if (!accs.some((a) => a.active)) list.append(el("p", "muted", "No account is marked active yet — pick one."));
+
+    for (const a of accs) {
+      const card = el("div", "card" + (a.active ? " active" : ""));
+      const top = el("div", "top");
+      const info = el("div", "info");
+      const name = el("div", "name", a.name);
+      const plan = el("span", "pill", a.label);
+      plan.title = a.plan;
+      name.append(plan);
+      if (a.blocked) name.append(el("span", "pill warn", `≥ ${threshold}%`));
+      info.append(name, el("div", "email", a.email));
+      top.append(info);
+      if (a.active) {
+        top.append(el("span", "badge", "● Active"));
+      } else {
+        const b = el("button", null, "Switch");
+        b.type = "button";
+        b.disabled = busy;
+        b.addEventListener("click", () => switchTo(a.name, b));
+        top.append(b);
+      }
+      card.append(top);
+
+      const usage = a.usage || {};
+      const box = el("div", "usage");
+      for (const w of usage.windows || []) box.append(meter(w, threshold));
+      if (!(usage.windows || []).length) box.append(el("div", "usage-note", usage.fetched_at ? "No usage in the current windows." : "Usage not checked yet."));
+      const bits = [];
+      if (usage.fetched_at) bits.push(`usage as of ${rel(usage.fetched_at)}`);
+      if (usage.error) bits.push(usage.error);
+      if (bits.length) box.append(el("div", "usage-note", bits.join(" · ")));
+      card.append(box);
+      list.append(card);
+    }
+
+    const ev = $("#events");
+    ev.replaceChildren();
+    for (const e of auto.events || []) {
+      const li = el("li", e.kind || "info");
+      li.append(el("span", "t", when(e.t)), el("span", "m", e.msg));
+      ev.append(li);
+    }
+    if (!ev.children.length) ev.append(el("li", null, "Nothing yet."));
+    $("#updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  }
+
+  function setBusy(on) {
+    busy = on;
+    document.querySelectorAll("button").forEach((b) => (b.disabled = on));
+  }
+
+  async function load() {
+    try {
+      const r = await fetch("/api/accounts", { cache: "no-store" });
+      if (r.status === 401) return location.reload();
+      render(await r.json());
+    } catch (e) {
+      showResult(false, "Could not reach the server", String(e));
+    }
+  }
+
+  async function post(path, body, label) {
+    if (busy) return;
+    setBusy(true);
+    if (label) label.btn.textContent = label.text;
+    try {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (r.status === 401) { location.reload(); return null; }
+      const d = await r.json();
+      busy = false;
+      if (d.accounts) render(d); else await load();
+      return d;
+    } catch (e) {
+      busy = false;
+      await load();
+      return { ok: false, output: String(e) };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function switchTo(name, btn) {
+    const d = await post("/api/use", { name }, { btn, text: "Switching…" });
+    if (d) showResult(!!d.ok, d.ok ? `Switched to “${name}”` : `Switch to “${name}” failed`, d.output);
+  }
+
+  $("#auto-toggle").addEventListener("click", async () => {
+    const on = !(last && last.auto && last.auto.enabled);
+    const d = await post("/api/auto", { enabled: on }, { btn: $("#auto-toggle"), text: "…" });
+    if (d && !d.ok) showResult(false, "Could not change auto-switch", d.output);
+  });
+  $("#check").addEventListener("click", async () => {
+    const d = await post("/api/check", {}, { btn: $("#check"), text: "Checking…" });
+    if (d && !d.ok) showResult(false, "Usage check failed", d.output);
+  });
+  $("#refresh").addEventListener("click", load);
+  $("#logout-all").addEventListener("click", async () => {
+    if (!confirm("Sign out every browser that is signed in?")) return;
+    await fetch("/api/logout-all", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+    location.reload();
+  });
+  $("#logout").addEventListener("click", async () => {
+    await fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+    location.reload();
+  });
+  setInterval(() => { if (!busy && !document.hidden) load(); }, 30000);
+  load();
+</script>
+</body>
+</html>

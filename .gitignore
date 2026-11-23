@@ -1,0 +1,20 @@
+# Secrets and local config — never commit
+.env
+.env.*
+!.env.example
+.leakcheck-denylist
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials.json
+.credentials.json
+state.json
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/

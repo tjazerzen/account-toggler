@@ -1,0 +1,67 @@
+name: security
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 5 * * 1"   # weekly full-history re-scan (scanner versions are bumped by hand)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  leaks:
+    name: Secret & personal-data scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # LEAKCHECK_DENYLIST is an optional Actions secret (your email, domain, hostnames,
+      # one per line). Secrets are never given to workflows from forks.
+      - name: Built-in leak check (files + every commit, message and identity)
+        env:
+          LEAKCHECK_DENYLIST: ${{ secrets.LEAKCHECK_DENYLIST }}
+        run: |
+          python3 -I scripts/check_secrets.py --all
+          python3 -I scripts/check_secrets.py --history HEAD
+
+      - name: gitleaks (full history)
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 -v .
+
+      - name: TruffleHog (full history, verified and unverified)
+        env:
+          TRUFFLEHOG_VERSION: "3.99.8"
+          TRUFFLEHOG_SHA256: "7c3b02f160f28929a467e29e20fba98746e0729f6e37c3c25761e4f8789abe08"
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trufflehog.tgz" \
+            "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz"
+          echo "${TRUFFLEHOG_SHA256}  $RUNNER_TEMP/trufflehog.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trufflehog.tgz" -C "$RUNNER_TEMP" trufflehog
+          "$RUNNER_TEMP/trufflehog" git "file://$GITHUB_WORKSPACE" --results=verified,unknown --fail --no-update
+
+  tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest -v test_server test_check_secrets

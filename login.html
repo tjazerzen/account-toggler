@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Sign in</title>
+<style>
+  :root { --bg: #f6f5f2; --card: #ffffff; --text: #1d1c1a; --muted: #6b6760; --border: #e2dfd8;
+          --accent: #c96442; --accent-text: #ffffff; --err: #c8463b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #191817; --card: #232220; --text: #ecebe8; --muted: #a29e96; --border: #3a3835;
+            --accent: #d97757; --accent-text: #1a1311; --err: #e0645a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 360px; margin: 18vh auto 0; padding: 0 16px; }
+  form { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  h1 { font-size: 18px; margin: 0 0 14px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input[type=password] { width: 100%; font: inherit; padding: 9px 11px; border-radius: 8px;
+                         border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  input[type=password]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .hidden { display: none; }
+  button { margin-top: 14px; width: 100%; font: inherit; font-weight: 600; border: 0; border-radius: 8px;
+           padding: 9px 16px; cursor: pointer; background: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: .5; cursor: default; }
+  #msg { min-height: 20px; margin: 10px 0 0; font-size: 13px; color: var(--err); }
+</style>
+</head>
+<body>
+<main>
+  <form id="f" autocomplete="on">
+    <h1>Sign in</h1>
+    <input class="hidden" type="text" name="username" autocomplete="username" value="master" readonly tabindex="-1" aria-hidden="true">
+    <label for="pw">Master password</label>
+    <input id="pw" type="password" name="password" autocomplete="current-password" required autofocus>
+    <button id="go" type="submit">Sign in</button>
+    <p id="msg" role="alert"></p>
+  </form>
+</main>
+<script>
+  const f = document.getElementById("f"), go = document.getElementById("go"), msg = document.getElementById("msg");
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    go.disabled = true;
+    msg.textContent = "";
+    try {
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: document.getElementById("pw").value }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.ok) { location.replace("/"); return; }
+      msg.textContent = d.output || `Sign-in failed (${r.status}).`;
+    } catch (err) {
+      msg.textContent = "Could not reach the server.";
+    }
+    go.disabled = false;
+    document.getElementById("pw").select();
+  });
+</script>
+</body>
+</html>

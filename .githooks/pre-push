@@ -1,0 +1,20 @@
+#!/bin/sh
+# Last line of defence before anything becomes public: scans every added line and commit
+# message being pushed (even commits made with --no-verify), the author/committer/tagger
+# emails, and the whole history with gitleaks.
+set -e
+HOOKS=$(cd "$(dirname "$0")" && pwd)
+cd "$(git rev-parse --show-toplevel)"
+zero=0000000000000000000000000000000000000000
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue          # branch deletion
+  if [ "$remote_sha" = "$zero" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
+  python3 -I "$HOOKS/check_secrets.py" --history "$range" --require-local
+done
+python3 -I "$HOOKS/check_secrets.py" --all --require-local
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --redact --no-banner --exit-code 1 .
+else
+  echo "pre-push: gitleaks is not installed; install it before publishing." >&2
+  exit 1
+fi
