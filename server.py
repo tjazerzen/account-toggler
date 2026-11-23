@@ -12,6 +12,7 @@ Every page and API call needs the master password (MASTER_PASSWORD). Configurati
 comes from the environment, or from `.env` next to this file; see `.env.example`.
 Never commit `.env`.
 """
+import functools
 import hashlib
 import hmac
 import ipaddress
@@ -141,13 +142,24 @@ def atomic_write_json(path, obj):
 # ---------------------------------------------------------------- auth
 
 _EPHEMERAL_SECRET = secrets.token_hex(32)
+_PASSWORD_SALT = b"claude-account-ui/password-v1"
+
+
+def _scrypt(password):
+    """Deliberately slow, memory-hard password hash (~16 MiB, tens of ms per guess)."""
+    return hashlib.scrypt(password.encode("utf-8", "replace"), salt=_PASSWORD_SALT,
+                          n=2 ** 14, r=8, p=1, dklen=32)
+
+
+@functools.lru_cache(maxsize=2)
+def _master_digest(master):
+    return _scrypt(master)
 
 
 def _key(label):
     # Bound to the password too: changing either one invalidates every cookie.
     secret = SESSION_SECRET or _EPHEMERAL_SECRET
-    return hmac.new(secret.encode(), label + hashlib.sha256(MASTER_PASSWORD.encode()).digest(),
-                    hashlib.sha256).digest()
+    return hmac.new(secret.encode(), label + _master_digest(MASTER_PASSWORD), hashlib.sha256).digest()
 
 
 def _make_token(label, days, now=None):
@@ -247,8 +259,7 @@ def device_id(value):
 def password_ok(candidate):
     if not isinstance(candidate, str) or len(candidate) > 1024:
         return False
-    return hmac.compare_digest(hashlib.sha256(candidate.encode("utf-8", "replace")).digest(),
-                               hashlib.sha256(MASTER_PASSWORD.encode()).digest())
+    return hmac.compare_digest(_scrypt(candidate), _master_digest(MASTER_PASSWORD))
 
 
 def rate_bucket(public, forwarded_ip, device):
@@ -694,6 +705,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Strict-Transport-Security", "max-age=31536000")
         self.send_header("Content-Security-Policy", csp)
         for k, v in headers:
+            if any(c in str(v) for c in "\r\n\0"):
+                raise ValueError("refusing to send a header value with a line break")
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -718,7 +731,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.public and not self.is_https():
             # Never accept a password or cookie over plain HTTP from the internet.
             if self.command in ("GET", "HEAD"):
-                self._send(308, "", "text/plain", headers=[("Location", f"https://{self._hostname()}/")])
+                # Redirect target comes from our own config, never from the request.
+                host = next(h for h in sorted(PUBLIC_HOSTS) if h == self._hostname())
+                self._send(308, "", "text/plain", headers=[("Location", f"https://{host}/")])
             else:
                 self._json(403, {"ok": False, "output": "HTTPS required"})
             return False

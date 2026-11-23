@@ -1,0 +1,5 @@
+name: claude-account-ui
+# The tests deliberately write fake secrets into throwaway repos; scan only shipped code.
+paths-ignore:
+  - test_server.py
+  - test_check_secrets.py
