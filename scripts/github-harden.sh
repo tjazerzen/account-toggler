@@ -11,8 +11,12 @@ step() {
   local err
   if err=$("$@" 2>&1 >/dev/null); then echo "  ✓ $msg"; else echo "  ✗ $msg: ${err:0:200}" >&2; fails=$((fails+1)); fi
 }
-feature() {  # one security_and_analysis feature per call, so one unavailable feature can't block the rest
-  step "$1" gh api -X PATCH "repos/$R" --input - <<<"{\"security_and_analysis\": {\"$2\": {\"status\": \"enabled\"}}}"
+feature() {  # one security_and_analysis feature per call, then read it back: GitHub may accept
+            # the request yet leave a feature off when the plan doesn't include it
+  gh api -X PATCH "repos/$R" --input - <<<"{\"security_and_analysis\": {\"$2\": {\"status\": \"enabled\"}}}" >/dev/null 2>&1
+  local now
+  now=$(gh api "repos/$R" --jq ".security_and_analysis.$2.status // \"unavailable\"" 2>/dev/null)
+  if [ "$now" = enabled ]; then echo "  ✓ $1"; else echo "  - $1: $now (not included in this plan)"; fi
 }
 
 echo "Hardening $R"
