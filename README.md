@@ -10,7 +10,7 @@ It sits on top of a `claude-account` CLI (`scripts/claude-account`: `list`, `use
 shows 5-hour and weekly usage, and switches with one click. It also switches which
 ChatGPT account [Codex](#codex) uses, the same way (`scripts/codex-account`).
 
-<img src="docs/screenshot.png" alt="Account switcher: two accounts with usage bars, auto-switch on (personal details masked)" width="480">
+<img src="docs/screenshot.png" alt="Account toggler: Claude and Codex panels side by side, each with its accounts, usage meters and an auto-switch toggle (personal details replaced)" width="720">
 
 - Python standard library only. Files: `server.py`, `index.html`, `login.html`.
 - Listens on `127.0.0.1` and is meant to sit behind a TLS reverse proxy.

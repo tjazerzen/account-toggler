@@ -7,136 +7,213 @@
 <title>Account Toggler</title>
 <style>
   :root {
-    --bg: #f6f5f2; --card: #ffffff; --text: #1d1c1a; --muted: #6b6760; --border: #e2dfd8;
-    --accent: #c96442; --accent-text: #ffffff; --active-bg: #fbf1ec;
-    --ok-bg: #eaf5ec; --ok-border: #9bcfa5; --err-bg: #fbeceb; --err-border: #e3a29c;
-    --note-bg: #fff7e0; --note-border: #ecd48a;
-    --track: #ebe8e1; --bar: #5b8f6a; --bar-warn: #d39a2c; --bar-full: #c8463b; --on: #3f8a55;
+    color-scheme: light dark;
+    --bg: #f5f5f4; --panel: #ffffff; --hover: #f5f5f4;
+    --text: #1c1917; --muted: #6f6a64; --faint: #a8a29e;
+    --border: #e4e2df; --divider: #efedea; --border-strong: #d6d3d1;
+    --track: #ebe9e6; --fill: #8a847d;
+    --live: #2563eb; --live-bg: #eff4ff;
+    --ok: #15803d; --switch-on: #15803d; --switch-off: #d6d3d1;
+    --warn: #b45309; --warn-bg: #fdf4e7;
+    --danger: #c62828; --danger-bg: #fdf0f0;
+    --shadow: 0 6px 24px rgba(28, 25, 23, .12);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #191817; --card: #232220; --text: #ecebe8; --muted: #a29e96; --border: #3a3835;
-      --accent: #d97757; --accent-text: #1a1311; --active-bg: #2e2420;
-      --ok-bg: #1d2b20; --ok-border: #3f7a4b; --err-bg: #301e1c; --err-border: #8a4038;
-      --note-bg: #2c2717; --note-border: #6b5a22;
-      --track: #34322f; --bar: #6aa97c; --bar-warn: #e0a940; --bar-full: #e0645a; --on: #6bc285;
+      --bg: #121211; --panel: #1b1b19; --hover: #232321;
+      --text: #ecebe8; --muted: #a29e97; --faint: #5f5c57;
+      --border: #2e2d2a; --divider: #262522; --border-strong: #3a3936;
+      --track: #2b2a27; --fill: #8f8a83;
+      --live: #6b9bf7; --live-bg: #1b2638;
+      --ok: #4ade80; --switch-on: #2f9e5a; --switch-off: #4a4844;
+      --warn: #f0a83a; --warn-bg: #2c2212;
+      --danger: #f2706a; --danger-bg: #321b1a;
+      --shadow: 0 6px 24px rgba(0, 0, 0, .5);
     }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 600px; margin: 0 auto; padding: 32px 16px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 8px; }
-  .sub { color: var(--muted); margin: 0 0 20px; }
-  .note { background: var(--note-bg); border: 1px solid var(--note-border); border-radius: 10px;
-          padding: 10px 14px; margin-bottom: 16px; font-size: 14px; }
-  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
-  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .panel-title { font-weight: 600; }
-  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: 1px; }
-  .dot.on { background: var(--on); }
-  .panel p { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; }
-  .card.active { border-color: var(--accent); background: var(--active-bg); box-shadow: 0 0 0 1px var(--accent) inset; }
-  .top { display: flex; align-items: center; gap: 12px; }
-  .info { flex: 1; min-width: 0; }
-  .name { font-weight: 600; font-size: 16px; }
-  .email { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-  .pill { display: inline-block; font-size: 12px; border: 1px solid var(--border); border-radius: 999px;
-          padding: 0 8px; margin-left: 6px; color: var(--muted); vertical-align: 1px; font-weight: 500; }
-  .pill.warn { color: var(--bar-full); border-color: var(--bar-full); }
-  .badge { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
-  .badge.quiet { color: var(--muted); font-weight: 500; }
-  .usage { margin-top: 10px; display: grid; gap: 6px; }
-  .meter { display: grid; grid-template-columns: 110px 1fr 44px; align-items: center; gap: 10px; font-size: 13px; }
-  .meter .lbl { color: var(--muted); }
-  .meter .pct { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
-  .track { position: relative; height: 8px; background: var(--track); border-radius: 999px; overflow: hidden; }
-  .fill { height: 100%; background: var(--bar); border-radius: 999px; }
-  .fill.warn { background: var(--bar-warn); } .fill.full { background: var(--bar-full); }
-  .tick { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--muted); opacity: .6; }
-  .resets { grid-column: 2 / 4; margin-top: -4px; font-size: 12px; color: var(--muted); }
-  .usage-note { font-size: 12px; color: var(--muted); }
-  button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer;
-           background: var(--accent); color: var(--accent-text); white-space: nowrap; }
+         font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 24px 48px; display: grid; gap: 16px; }
+  .cols { display: grid; gap: 16px; align-items: start; }
+  @media (min-width: 900px) { .cols { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 899px) { main { max-width: 640px; } }
+  @media (max-width: 480px) { main { padding: 16px 16px 40px; gap: 12px; } .cols { gap: 12px; } }
+
+  /* header */
+  .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  h1 { margin: 0; font-size: 15px; line-height: 20px; font-weight: 600; }
+  #updated { margin: 2px 0 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #updated.warn { color: var(--warn); }
+  .actions { display: flex; gap: 8px; flex: none; }
+
+  /* buttons: none of them is filled */
+  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 6px;
+         background: var(--panel); color: var(--text); font-family: inherit; font-size: 13px; font-weight: 500;
+         white-space: nowrap; cursor: pointer; }
+  .btn:hover:not(:disabled) { background: var(--hover); }
   button:disabled { opacity: .5; cursor: default; }
-  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); font-weight: 500; padding: 6px 12px; }
-  .row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 12px; flex-wrap: wrap; }
-  .muted { color: var(--muted); font-size: 13px; }
-  #result { display: none; margin-top: 12px; border-radius: 10px; padding: 10px 14px; border: 1px solid; }
-  #result.ok { display: block; background: var(--ok-bg); border-color: var(--ok-border); }
-  #result.err { display: block; background: var(--err-bg); border-color: var(--err-border); }
-  #result strong { display: block; margin-bottom: 4px; }
-  #result pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  ul.events { list-style: none; margin: 0; padding: 0; font-size: 13px; }
-  ul.events li { padding: 6px 0; border-top: 1px solid var(--border); display: grid; grid-template-columns: 92px 1fr; gap: 8px; }
-  ul.events li:first-child { border-top: 0; }
-  ul.events .t { color: var(--muted); font-variant-numeric: tabular-nums; }
-  ul.events li.error .m { color: var(--bar-full); }
-  ul.events li.switch .m { font-weight: 600; }
+  :focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+  .link { border: 0; background: none; padding: 0; font: inherit; font-size: 12px; color: var(--muted);
+          text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+  /* product panels */
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+           container-type: inline-size; }
+  .panel-head { padding: 12px 16px 10px; border-bottom: 1px solid var(--divider); }
+  .ph-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 28px; }
+  h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 0 0 8px; border: 0;
+            background: none; font-family: inherit; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; }
+  .switch[aria-checked="true"] { color: var(--text); }
+  .knob { position: relative; width: 30px; height: 18px; border-radius: 9px; background: var(--switch-off);
+          transition: background .15s; }
+  .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+                 background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .25); transition: transform .15s; }
+  .switch[aria-checked="true"] .knob { background: var(--switch-on); }
+  .switch[aria-checked="true"] .knob::after { transform: translateX(12px); }
+  .health { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 0; font-size: 13px; line-height: 18px; color: var(--muted); }
+  .health.warn { color: var(--warn); }
+  .health.danger { color: var(--danger); }
+  .health strong { color: var(--text); font-weight: 600; }
+  .dot { flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--faint); }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.danger { background: var(--danger); }
+  .empty { padding: 12px 16px; color: var(--muted); }
+
+  /* account rows */
+  .acct { padding: 12px 16px; border-top: 1px solid var(--divider); }
+  .acct:first-child { border-top: 0; }
+  .acct.live { box-shadow: inset 3px 0 0 var(--live); }
+  .acct-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .acct-id { min-width: 0; }
+  .acct-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 14px; line-height: 20px; font-weight: 600; }
+  .plan { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .acct-sub { font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .acct-sub .age.stale { color: var(--warn); }
+  .tag { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .tag.live { color: var(--live); background: var(--live-bg); }
+  .tag.danger { color: var(--danger); background: var(--danger-bg); }
+  .tag.stale { color: var(--muted); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .usage { margin-top: 8px; display: grid; gap: 6px; }
+  .note { margin-top: 6px; font-size: 12px; line-height: 16px; color: var(--muted); }
+  .usage .note { margin-top: 0; }
+  .note.err { color: var(--danger); }
+
+  /* meters: one line per window */
+  .meter { display: grid; grid-template-columns: 104px minmax(0, 1fr) 40px 76px; grid-template-areas: "lbl bar pct reset";
+           align-items: center; column-gap: 12px; font-size: 12px; line-height: 16px; }
+  .lbl { grid-area: lbl; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .track { grid-area: bar; position: relative; height: 6px; border-radius: 3px; background: var(--track); }
+  .fill { height: 100%; border-radius: 3px; background: var(--fill); }
+  .fill.warn { background: var(--warn); } .fill.full { background: var(--danger); }
+  .tick { position: absolute; top: -2px; bottom: -2px; width: 1px; margin-left: -.5px; background: var(--text); opacity: .35; }
+  .pct { grid-area: pct; text-align: right; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pct.warn { color: var(--warn); } .pct.full { color: var(--danger); } .pct.dim { color: var(--muted); font-weight: 400; }
+  .reset { grid-area: reset; text-align: right; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .reset.blocking { color: var(--text); font-weight: 500; }
+  .acct.stale .fill { background: var(--faint); }
+  .acct.stale .pct { color: var(--muted); }
+  @container (max-width: 440px) {
+    .meter { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "lbl pct reset" "bar bar bar";
+             row-gap: 4px; column-gap: 8px; }
+    .usage { gap: 10px; }
+    .acct, .panel-head, .empty { padding-left: 12px; padding-right: 12px; }
+  }
+
+  /* activity */
+  .events { list-style: none; margin: 0; padding: 6px 0; }
+  .events li { display: grid; grid-template-columns: 68px 52px minmax(0, 1fr); gap: 8px; padding: 5px 16px; font-size: 13px; line-height: 18px; }
+  .events .t, .events .src { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .events li.ev-info .m { color: var(--muted); }
+  .events li.ev-error .m { color: var(--danger); }
+  @media (max-width: 480px) { .events li { grid-template-columns: 66px 44px minmax(0, 1fr); padding: 5px 12px; font-size: 12px; } }
+
+  /* footer */
+  .foot { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; font-size: 12px; color: var(--muted); }
+  summary { cursor: pointer; }
+  details p { margin: 8px 0 0; max-width: 60ch; line-height: 1.5; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; }
+
+  /* switch / check results: a toast at the bottom, wherever you are on the page */
+  #result { display: none; position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(480px, calc(100% - 32px));
+            padding: 10px 36px 10px 12px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 8px;
+            box-shadow: var(--shadow); font-size: 13px; z-index: 10; }
+  #result.ok { display: block; border-left: 3px solid var(--ok); }
+  #result.err { display: block; border-left: 3px solid var(--danger); }
+  #result strong { display: block; font-weight: 600; }
+  #result pre { margin: 6px 0 0; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+                font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #result pre:empty { display: none; }
+  #result-close { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border: 0; background: none;
+                  color: var(--muted); font-size: 16px; cursor: pointer; }
+  @media (pointer: coarse) { .btn { height: 36px; padding: 0 12px; } .switch { height: 36px; } }
 </style>
 </head>
 <body>
 <main>
-  <div class="head">
+  <header class="top">
     <div>
       <h1>Account toggler</h1>
-      <p class="sub">Which Claude subscription Claude Code / T3 Code uses on this VM, and which ChatGPT account Codex uses.</p>
+      <p id="updated">Loading…</p>
     </div>
-    <button class="ghost" id="logout" type="button">Sign out</button>
-  </div>
-
-  <div class="note">
-    A switch changes the login for the whole VM. Claude Code re-reads its login file when it changes,
-    so running T3 threads move to the new account on their next request, and new threads start on it.
-    To add an account, just log in with it (<code>/login</code> in Claude Code, <code>codex login</code>):
-    it's saved here within a couple of minutes.
-  </div>
-
-  <div class="panel" id="auto">
-    <div class="panel-head">
-      <span class="panel-title"><span class="dot" id="auto-dot"></span><span id="auto-state">Auto-switch</span></span>
-      <button class="ghost" id="auto-toggle" type="button" disabled>…</button>
+    <div class="actions">
+      <button class="btn" id="check" type="button">Check now</button>
+      <button class="btn" id="logout" type="button">Sign out</button>
     </div>
-    <p id="auto-desc"></p>
+  </header>
+
+  <div class="cols">
+    <section class="panel">
+      <div class="panel-head">
+        <div class="ph-row">
+          <h2>Claude</h2>
+          <button class="switch" id="auto-toggle" type="button" role="switch" aria-checked="false" disabled>
+            <span>Auto-switch</span><span class="knob" aria-hidden="true"></span>
+          </button>
+        </div>
+        <p class="health" id="auto-health"><span class="dot" id="auto-dot"></span><span id="auto-desc">Loading…</span></p>
+      </div>
+      <div id="accounts"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div class="ph-row">
+          <h2>Codex</h2>
+          <button class="switch" id="codex-auto-toggle" type="button" role="switch" aria-checked="false" disabled>
+            <span>Auto-switch</span><span class="knob" aria-hidden="true"></span>
+          </button>
+        </div>
+        <p class="health" id="codex-auto-health"><span class="dot" id="codex-auto-dot"></span><span id="codex-auto-desc">Loading…</span></p>
+      </div>
+      <div id="codex"></div>
+    </section>
   </div>
 
-  <div id="accounts"><p class="muted">Loading…</p></div>
+  <section class="panel">
+    <div class="panel-head"><h2>Activity</h2></div>
+    <ul class="events" id="events"></ul>
+  </section>
 
-  <h2>Codex</h2>
-  <div class="panel" id="codex-auto">
-    <div class="panel-head">
-      <span class="panel-title"><span class="dot" id="codex-auto-dot"></span><span id="codex-auto-state">Codex auto-switch</span></span>
-      <button class="ghost" id="codex-auto-toggle" type="button" disabled>…</button>
-    </div>
-    <p id="codex-auto-desc"></p>
-  </div>
-  <div id="codex"><p class="muted">Loading…</p></div>
-
-  <div id="result"><strong></strong><pre></pre></div>
-
-  <div class="row">
-    <span class="muted" id="updated"></span>
-    <span>
-      <button class="ghost" id="check" type="button">Check usage now</button>
-      <button class="ghost" id="refresh" type="button">Refresh</button>
-    </span>
-  </div>
-
-  <h2>Recent activity</h2>
-  <ul class="events" id="events"><li><span class="t"></span><span class="m muted">Nothing yet.</span></li></ul>
-
-  <div class="row">
-    <span class="muted">Lost a device? This signs out every browser, including this one.</span>
-    <button class="ghost" id="logout-all" type="button">Sign out everywhere</button>
-  </div>
+  <footer class="foot">
+    <details>
+      <summary>How switching works</summary>
+      <p>A switch changes the login for the whole VM. Running T3 threads move to the new Claude account on their next
+        request; Codex needs a new thread. Auto-switch moves to the next account at the threshold and back once the
+        preferred one's limit resets. To add an account, log in with it (<code>/login</code> in Claude Code,
+        <code>codex login</code>); it shows up here within 2 minutes.</p>
+    </details>
+    <button class="link" id="logout-all" type="button">Sign out everywhere</button>
+  </footer>
 </main>
+
+<div id="result" role="status" aria-live="polite"><strong></strong><pre></pre>
+  <button id="result-close" type="button" aria-label="Dismiss">×</button></div>
+
 <script>
   const $ = (s) => document.querySelector(s);
-  let busy = false;
-  let last = null;
+  const DAY = 86400;
+  let busy = false, last = null, lastLoaded = null, toastTimer = null;
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -145,163 +222,246 @@
     return e;
   }
 
-  function rel(ts) {
-    const s = Math.round(ts - Date.now() / 1000), a = Math.abs(s);
-    const txt = a < 60 ? `${a}s` : a < 3600 ? `${Math.round(a / 60)} min`
-      : a < 86400 ? `${Math.floor(a / 3600)}h ${Math.round((a % 3600) / 60)}m` : `${Math.floor(a / 86400)}d ${Math.round((a % 86400) / 3600)}h`;
-    return s >= 0 ? `in ${txt}` : `${txt} ago`;
+  // ---- time formatting (24-hour clock, no AM/PM noise)
+  const now = () => Date.now() / 1000;
+  const iso = (s) => { const t = Date.parse(s || ""); return Number.isNaN(t) ? null : t / 1000; };
+  const hm = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const dayHm = (ts) => new Date(ts * 1000).toLocaleDateString([], { weekday: "short" }) + " " + hm(ts);
+  const isToday = (ts) => new Date(ts * 1000).toDateString() === new Date().toDateString();
+  function dur(s) {
+    s = Math.max(0, Math.round(s));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)} min`;
+    if (s < DAY) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    return `${Math.floor(s / DAY)}d ${Math.floor((s % DAY) / 3600)}h`;
   }
-  function when(ts) {
-    const d = new Date(ts * 1000), today = new Date().toDateString() === d.toDateString();
-    return today ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  function age(ts) {  // "32s", "2 min", "3h", "2d"
+    const s = Math.max(0, now() - ts);
+    return s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.floor(s / 60)} min` : s < DAY ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / DAY)}d`;
+  }
+  function soon(ts) {  // a reset time, compact: "in 2h 17m", "Sun 13:00", "21 Dec"
+    const d = ts - now();
+    if (d < DAY) return `in ${dur(d)}`;
+    if (d < 7 * DAY) return dayHm(ts);
+    return new Date(ts * 1000).toLocaleDateString([], { day: "numeric", month: "short" });
+  }
+  const at = (ts) => (ts - now() < DAY ? `${hm(ts)} (in ${dur(ts - now())})` : dayHm(ts));
+
+  // ---- account state
+  const isStale = (u) => /expired/i.test(u.error || "") || (u.fetched_at && now() - u.fetched_at > 1800);
+  const atLimit = (a) => a.limit_reached || ((a.usage || {}).windows || []).some((w) => !w.reset && w.u >= 100);
+  function freeUp(a, threshold) {  // when a blocked account has room again
+    let t = null;
+    for (const w of (a.usage || {}).windows || []) {
+      const r = iso(w.resets_at);
+      if (!w.reset && w.u >= threshold && r && (t === null || r > t)) t = r;
+    }
+    return t;
+  }
+  function inOrder(accs, prio) {
+    const names = accs.map((a) => a.name);
+    return [...prio.filter((n) => names.includes(n)), ...names.filter((n) => !prio.includes(n))];
   }
 
-  function showResult(ok, title, text) {
-    const r = $("#result");
-    r.className = ok ? "ok" : "err";
-    r.querySelector("strong").textContent = title;
-    r.querySelector("pre").textContent = text || "";
-  }
-
-  function meter(w, threshold, tickLine = true) {
+  function meter(w, threshold) {
     const row = el("div", "meter");
     const u = w.reset ? 0 : w.u;
-    const fill = el("div", "fill" + (u >= threshold ? " full" : u >= threshold - 20 ? " warn" : ""));
-    fill.style.width = Math.min(100, u) + "%";
+    const lvl = w.reset ? "" : u >= threshold ? "full" : u >= threshold - 20 ? "warn" : "";
+    const lbl = el("span", "lbl", w.label);
+    lbl.title = w.label;
     const track = el("div", "track");
+    const fill = el("div", "fill" + (lvl ? " " + lvl : ""));
+    fill.style.width = u > 0 ? `max(3px, ${Math.min(100, u)}%)` : "0";
     const tick = el("div", "tick");
     tick.style.left = threshold + "%";
-    tick.title = `auto-switch at ${threshold}%`;
-    track.append(fill);
-    if (tickLine) track.append(tick);
-    row.append(el("span", "lbl", w.label), track, el("span", "pct", Math.round(u) + "%"));
-    if (w.resets_at) {
-      const t = Date.parse(w.resets_at) / 1000;
-      row.append(el("span", "resets", w.reset ? `reset ${rel(t)} (was ${Math.round(w.u)}%)` : `resets ${rel(t)} · ${when(t)}`));
+    tick.title = `Auto-switch at ${threshold}%`;
+    track.append(fill, tick);
+    const pct = el("span", "pct" + (w.reset ? " dim" : lvl ? " " + lvl : ""), Math.round(u) + "%");
+    const t = iso(w.resets_at);
+    const reset = el("span", "reset" + (!w.reset && w.u >= threshold ? " blocking" : ""));
+    if (w.reset) {
+      reset.textContent = "reset";
+      if (t) reset.title = `Reset ${dur(now() - t)} ago, was ${Math.round(w.u)}%`;
+    } else if (!t) {
+      reset.textContent = "—";
+    } else {
+      reset.textContent = soon(t);
+      reset.title = `Resets ${dayHm(t)} (in ${dur(t - now())})`;
+    }
+    row.append(lbl, track, pct, reset);
+    return row;
+  }
+
+  function accountRow(a, threshold, onSwitch) {
+    const u = a.usage || {};
+    const stale = isStale(u);
+    const row = el("div", "acct" + (a.active ? " live" : "") + (stale ? " stale" : ""));
+    const head = el("div", "acct-head");
+    const id = el("div", "acct-id");
+    const name = el("div", "acct-name");
+    name.append(el("span", null, a.name));
+    const plan = el("span", "plan", a.label);
+    plan.title = a.plan;
+    name.append(plan);
+    const tags = [];
+    if (atLimit(a)) tags.push(["danger", "At limit"]);
+    else if (a.blocked) tags.push(["danger", `≥ ${threshold}%`]);
+    if (stale) tags.push(["stale", "Stale"]);
+    for (const [cls, text] of tags.slice(0, 2)) name.append(el("span", "tag " + cls, text));
+    const sub = el("div", "acct-sub");
+    sub.append(document.createTextNode(a.email + " · "));
+    const seen = el("span", "age" + (stale ? " stale" : ""), u.fetched_at ? `${age(u.fetched_at)} ago` : "not checked");
+    if (u.fetched_at) seen.title = `Usage read ${dayHm(u.fetched_at)}` + (u.source ? ` · from ${u.source}` : "");
+    sub.append(seen);
+    id.append(name, sub);
+    head.append(id);
+    if (a.active) {
+      head.append(el("span", "tag live", "Live"));
+    } else {
+      const b = el("button", "btn", "Switch");
+      b.type = "button";
+      b.disabled = busy;
+      const fu = a.blocked ? freeUp(a, threshold) : null;
+      if (fu) b.title = `${a.name} is at its limit until ${at(fu)}`;
+      b.addEventListener("click", () => onSwitch(a.name, b));
+      head.append(b);
+    }
+    row.append(head);
+
+    const box = el("div", "usage");
+    const ws = u.windows || [];
+    if (!u.fetched_at) box.append(el("div", "note", "Not checked yet."));
+    else if (!ws.length) box.append(el("div", "note", "No usage in the current windows."));
+    for (const w of ws) box.append(meter(w, threshold));
+    row.append(box);
+    if (u.error) {
+      const n = /expired/i.test(u.error) ? el("div", "note", "Token expired · showing last reading")
+        : /rate-limited/i.test(u.error) ? el("div", "note", u.error)
+        : el("div", "note err", u.error);
+      n.title = u.error;
+      row.append(n);
     }
     return row;
   }
 
-  function usageBox(usage, threshold, tickLine) {
-    const box = el("div", "usage");
-    for (const w of usage.windows || []) box.append(meter(w, threshold, tickLine));
-    if (!(usage.windows || []).length) box.append(el("div", "usage-note", usage.fetched_at ? "No usage in the current windows." : "Usage not checked yet."));
-    const bits = [];
-    if (usage.fetched_at) bits.push(`usage as of ${rel(usage.fetched_at)}` + (usage.source ? ` (from ${usage.source})` : ""));
-    if (usage.error) bits.push(usage.error);
-    if (bits.length) box.append(el("div", "usage-note", bits.join(" · ")));
-    return box;
+  // One line per product that answers "what's live and is auto-switch doing its job?"
+  function health(prefix, accs, enabled, prio, threshold, err, lastCheck, poll) {
+    const order = inOrder(accs, prio);
+    const byName = Object.fromEntries(accs.map((a) => [a.name, a]));
+    const live = accs.find((a) => a.active);
+    const t = now();
+    let tone = "ok", rest = "";
+    if (err || !live) {
+      tone = "danger";
+      rest = err || "No live account. Pick one below.";
+    } else if (lastCheck && t - lastCheck > Math.max(3 * poll, 180)) {
+      tone = "warn";
+      rest = `No check for ${dur(t - lastCheck)}. Is the service running?`;
+    } else if (!enabled) {
+      tone = "off";
+      rest = " live · Auto-switch off";
+    } else if (accs.every((a) => a.blocked)) {
+      tone = "danger";
+      const next = accs.map((a) => [a, freeUp(a, threshold)]).filter((x) => x[1]).sort((x, y) => x[1] - y[1])[0];
+      rest = " live · All accounts at limit" + (next ? ` · ${next[0].name} frees up ${at(next[1])}` : "");
+    } else {
+      const roomy = !live.blocked;
+      const best = order.find((n) => !byName[n].blocked && (!roomy || n === live.name || (byName[n].usage || {}).fetched_at));
+      if (best && best !== live.name) {
+        tone = "warn";
+        rest = ` live · Switching to ${best} shortly`;
+      } else if (order[0] !== live.name && byName[order[0]].blocked) {
+        const fu = freeUp(byName[order[0]], threshold);
+        rest = ` live · Back to ${order[0]} ` + (fu ? `at ${at(fu)}` : "once its limit resets");
+      } else {
+        const spare = order.find((n) => n !== live.name && !byName[n].blocked);
+        if (!spare) {
+          tone = accs.length > 1 ? "warn" : "ok";
+          rest = accs.length > 1 ? " live · No other account has room" : " live · No other account to switch to";
+        } else {
+          rest = ` live · Moves to ${spare} at ${threshold}%`;
+          const su = byName[spare].usage || {};
+          if (isStale(su) && su.fetched_at) rest += ` · its reading is ${age(su.fetched_at)} old`;
+        }
+      }
+    }
+    $(`#${prefix}-health`).className = "health" + (tone === "warn" || tone === "danger" ? " " + tone : "");
+    $(`#${prefix}-dot`).className = "dot" + (tone === "off" ? "" : " " + tone);
+    const desc = $(`#${prefix}-desc`);
+    desc.replaceChildren();
+    if (rest.startsWith(" live")) desc.append(el("strong", null, live.name));
+    desc.append(document.createTextNode(rest));
   }
 
-  function renderCodex(c, threshold) {
-    const auto = c.auto || {};
-    const prio = (auto.priority || []).join(" → ");
-    $("#codex-auto-dot").className = "dot" + (auto.enabled ? " on" : "");
-    $("#codex-auto-state").textContent = auto.enabled ? "Codex auto-switch is on" : "Codex auto-switch is off";
-    const t = $("#codex-auto-toggle");
-    t.textContent = auto.enabled ? "Turn off" : "Turn on";
-    t.disabled = busy;
-    $("#codex-auto-desc").textContent = (auto.enabled
-      ? `At ${threshold}% of any Codex limit it moves Codex to the next account (order: ${prio}) and back once the limit resets.`
-      : `Codex stays on the account you pick. Turn it on to switch at ${threshold}% of a limit (order: ${prio}).`) +
-      " Start a new Codex thread in T3 after a switch.";
-
-    const box = $("#codex");
+  function renderList(sel, accs, prio, threshold, onSwitch, emptyText) {
+    const box = $(sel);
     box.replaceChildren();
-    const accs = c.accounts || [];
-    if (c.error) box.append(el("p", "muted", c.error));
-    else if (!accs.length) box.append(el("p", "muted", "No saved Codex accounts. Use `codex-account login <name>` on the VM."));
-    for (const a of accs) {
-      const card = el("div", "card" + (a.active ? " active" : ""));
-      const top = el("div", "top");
-      const info = el("div", "info");
-      const name = el("div", "name", a.name);
-      const plan = el("span", "pill", a.label);
-      plan.title = a.plan;
-      name.append(plan);
-      if (a.limit_reached) name.append(el("span", "pill warn", "limit reached"));
-      else if (a.blocked) name.append(el("span", "pill warn", `≥ ${threshold}%`));
-      info.append(name, el("div", "email", a.email));
-      top.append(info);
-      if (a.active) top.append(el("span", "badge", "● Active"));
-      else {
-        const b = el("button", null, "Switch");
-        b.type = "button";
-        b.disabled = busy;
-        b.addEventListener("click", () => switchCodex(a.name, b));
-        top.append(b);
-      }
-      card.append(top, usageBox(a.usage || {}, threshold, true));
-      box.append(card);
-    }
+    if (!accs.length) box.append(el("div", "empty", emptyText));
+    const byName = Object.fromEntries(accs.map((a) => [a.name, a]));
+    for (const n of inOrder(accs, prio)) box.append(accountRow(byName[n], threshold, onSwitch));
+  }
+
+  function setToggle(sel, enabled) {
+    const t = $(sel);
+    t.setAttribute("aria-checked", String(!!enabled));
+    t.disabled = busy;
   }
 
   function render(data) {
     last = data;
+    lastLoaded = now();
     const auto = data.auto || {};
     const threshold = auto.threshold ?? 90;
-    const prio = (auto.priority || []).join(" → ");
+    const poll = auto.poll || 60;
+    const claude = data.accounts || [];
+    const prio = auto.priority || [];
+    setToggle("#auto-toggle", auto.enabled);
+    health("auto", claude, auto.enabled, prio, threshold, data.error, auto.last_check, poll);
+    renderList("#accounts", data.error ? [] : claude, prio, threshold, switchClaude,
+               data.error ? "" : "No saved accounts. Log in with one (/login in Claude Code) and it shows up here.");
 
-    $("#auto-dot").className = "dot" + (auto.enabled ? " on" : "");
-    $("#auto-state").textContent = auto.enabled ? "Auto-switch is on" : "Auto-switch is off";
-    const t = $("#auto-toggle");
-    t.textContent = auto.enabled ? "Turn off" : "Turn on";
-    t.disabled = busy;
-    $("#auto-desc").textContent = auto.enabled
-      ? `At ${threshold}% of any limit (5-hour or weekly), it moves to the next account. Order: ${prio}, so it returns to the first one once its limit resets. Checks every ${auto.poll || 60}s` +
-        (auto.last_check ? `; last check ${rel(auto.last_check)}.` : ".")
-      : `Accounts stay as they are. Turn it on to switch at ${threshold}% of a limit (order: ${prio}).`;
-
-    const list = $("#accounts");
-    list.replaceChildren();
-    const accs = data.accounts || [];
-    if (data.error) list.append(el("p", "muted", "Could not list accounts: " + data.error));
-    else if (!accs.length) list.append(el("p", "muted", "No saved accounts. Use `claude-account login <name>` on the VM."));
-    else if (!accs.some((a) => a.active)) list.append(el("p", "muted", "No account is marked active yet — pick one."));
-
-    for (const a of accs) {
-      const card = el("div", "card" + (a.active ? " active" : ""));
-      const top = el("div", "top");
-      const info = el("div", "info");
-      const name = el("div", "name", a.name);
-      const plan = el("span", "pill", a.label);
-      plan.title = a.plan;
-      name.append(plan);
-      if (a.blocked) name.append(el("span", "pill warn", `≥ ${threshold}%`));
-      info.append(name, el("div", "email", a.email));
-      top.append(info);
-      if (a.active) {
-        top.append(el("span", "badge", "● Active"));
-      } else {
-        const b = el("button", null, "Switch");
-        b.type = "button";
-        b.disabled = busy;
-        b.addEventListener("click", () => switchTo(a.name, b));
-        top.append(b);
-      }
-      card.append(top);
-
-      card.append(usageBox(a.usage || {}, threshold, true));
-      list.append(card);
-    }
-
-    renderCodex(data.codex || {}, threshold);
+    const c = data.codex || {};
+    const cauto = c.auto || {};
+    const cprio = cauto.priority || [];
+    setToggle("#codex-auto-toggle", cauto.enabled);
+    health("codex-auto", c.accounts || [], cauto.enabled, cprio, threshold, c.error, auto.last_check, poll);
+    renderList("#codex", c.accounts || [], cprio, threshold, switchCodex,
+               "No saved accounts. Log in with one (codex login) and it shows up here.");
 
     const ev = $("#events");
     ev.replaceChildren();
     for (const e of auto.events || []) {
-      const li = el("li", e.kind || "info");
-      li.append(el("span", "t", when(e.t)), el("span", "m", e.msg));
+      const src = /\bCodex\b/.test(e.msg) ? "Codex" : "Claude";
+      const li = el("li", "ev-" + (e.kind || "info"));  // prefixed: "switch" is also the toggle's class
+      li.append(el("span", "t", isToday(e.t) ? hm(e.t) : dayHm(e.t)), el("span", "src", src),
+                el("span", "m", e.msg.replace(/^Codex (\w)/, (_, ch) => ch.toUpperCase())));
       ev.append(li);
     }
-    if (!ev.children.length) ev.append(el("li", null, "Nothing yet."));
-    $("#updated").textContent = "Updated " + new Date().toLocaleTimeString();
+    if (!ev.children.length) {
+      const li = el("li", "ev-info");
+      li.append(el("span", "t"), el("span", "src"), el("span", "m", "Nothing yet."));
+      ev.append(li);
+    }
+
+    const u = $("#updated");
+    u.className = "";
+    u.textContent = auto.last_check ? `Checked ${age(auto.last_check)} ago` : "Not checked yet";
+    u.title = `Checks every ${poll}s`;
   }
+
+  function toast(ok, title, text) {
+    const r = $("#result");
+    clearTimeout(toastTimer);
+    r.className = ok ? "ok" : "err";
+    r.querySelector("strong").textContent = title;
+    r.querySelector("pre").textContent = ok ? "" : text || "";
+    if (ok) toastTimer = setTimeout(() => { r.className = ""; }, 5000);
+  }
+  $("#result-close").addEventListener("click", () => { clearTimeout(toastTimer); $("#result").className = ""; });
 
   function setBusy(on) {
     busy = on;
-    document.querySelectorAll("button").forEach((b) => (b.disabled = on));
+    document.querySelectorAll("main button").forEach((b) => (b.disabled = on));
   }
 
   async function load() {
@@ -310,20 +470,20 @@
       if (r.status === 401) return location.reload();
       render(await r.json());
     } catch (e) {
-      showResult(false, "Could not reach the server", String(e));
+      const u = $("#updated");
+      u.className = "warn";
+      u.textContent = `Offline · last update ${lastLoaded ? hm(lastLoaded) : "never"}`;
+      toast(false, "Could not reach the server", String(e));
     }
   }
 
   async function post(path, body, label) {
-    if (busy) return;
+    if (busy) return null;
     setBusy(true);
+    const before = label && label.btn.textContent;
     if (label) label.btn.textContent = label.text;
     try {
-      const r = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (r.status === 401) { location.reload(); return null; }
       const d = await r.json();
       busy = false;
@@ -334,36 +494,35 @@
       await load();
       return { ok: false, output: String(e) };
     } finally {
+      if (label && label.btn.isConnected) label.btn.textContent = before;
       setBusy(false);
     }
   }
 
-  async function switchTo(name, btn) {
+  async function switchClaude(name, btn) {
     const d = await post("/api/use", { name }, { btn, text: "Switching…" });
-    if (d) showResult(!!d.ok, d.ok ? `Switched to “${name}”` : `Switch to “${name}” failed`, d.output);
+    if (d) d.ok ? toast(true, `Claude now uses ${name}.`) : toast(false, `Couldn't switch Claude to ${name}`, d.output);
   }
-
   async function switchCodex(name, btn) {
     const d = await post("/api/codex/use", { name }, { btn, text: "Switching…" });
-    if (d) showResult(!!d.ok, d.ok ? `Codex switched to “${name}”` : `Codex switch to “${name}” failed`, d.output);
+    if (d) d.ok ? toast(true, `Codex now uses ${name}. Start a new Codex thread in T3.`)
+                : toast(false, `Couldn't switch Codex to ${name}`, d.output);
   }
+  $("#auto-toggle").addEventListener("click", async () => {
+    const d = await post("/api/auto", { enabled: !(last && last.auto && last.auto.enabled) }, null);
+    if (d && !d.ok) toast(false, "Couldn't change Claude auto-switch", d.output);
+  });
   $("#codex-auto-toggle").addEventListener("click", async () => {
     const on = !(last && last.codex && last.codex.auto && last.codex.auto.enabled);
-    const d = await post("/api/codex/auto", { enabled: on }, { btn: $("#codex-auto-toggle"), text: "…" });
-    if (d && !d.ok) showResult(false, "Could not change Codex auto-switch", d.output);
-  });
-  $("#auto-toggle").addEventListener("click", async () => {
-    const on = !(last && last.auto && last.auto.enabled);
-    const d = await post("/api/auto", { enabled: on }, { btn: $("#auto-toggle"), text: "…" });
-    if (d && !d.ok) showResult(false, "Could not change auto-switch", d.output);
+    const d = await post("/api/codex/auto", { enabled: on }, null);
+    if (d && !d.ok) toast(false, "Couldn't change Codex auto-switch", d.output);
   });
   $("#check").addEventListener("click", async () => {
     const d = await post("/api/check", {}, { btn: $("#check"), text: "Checking…" });
-    if (d && !d.ok) showResult(false, "Usage check failed", d.output);
+    if (d && !d.ok) toast(false, "Usage check failed", d.output);
   });
-  $("#refresh").addEventListener("click", load);
   $("#logout-all").addEventListener("click", async () => {
-    if (!confirm("Sign out every browser that is signed in?")) return;
+    if (!confirm("Sign out every browser, including this one?")) return;
     await fetch("/api/logout-all", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
     location.reload();
   });
