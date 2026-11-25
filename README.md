@@ -6,7 +6,8 @@ also switch automatically when an account gets close to its usage limit.
 
 It sits on top of a `claude-account` CLI (`list`, `use <name>`) that keeps one
 saved login per account. The page lists the accounts, highlights the active one,
-shows 5-hour and weekly usage, and switches with one click.
+shows 5-hour and weekly usage, and switches with one click. It also shows how much
+of its plan limits [Codex](#codex) has used (tracking only, no switching).
 
 <img src="docs/screenshot.png" alt="Account switcher: two accounts with usage bars, auto-switch on (personal details masked)" width="480">
 
@@ -78,7 +79,7 @@ hostnames within minutes.
 | DNS rebinding, host scanning | Unknown `Host` headers get 421. `robots.txt` and `X-Robots-Tag` keep it out of search engines. |
 | Slow-loris / floods | A request must arrive completely within 8 s. Each listener allows at most 64 connections (extra ones are dropped), and the local listener has its own pool. The unit sets `TasksMax`/`MemoryMax`, switch/check calls are throttled, and junk connections log one line, not a traceback. Put it behind Cloudflare for real DoS protection. |
 | Fingerprinting | No `Server` header, `/healthz` only answers locally, `robots.txt` disallows everything, and every response sends `X-Robots-Tag: noindex`. |
-| Token exposure | The server never prints or stores tokens. It reads access tokens only to query Anthropic's usage endpoint, and redacts anything token-shaped from CLI output. Secrets are removed from the environment before child processes start. |
+| Token exposure | The server never prints or stores tokens. It reads Claude access tokens only to query Anthropic's usage endpoint, and Codex's access token only to query chatgpt.com's usage endpoint. It redacts anything token-shaped from CLI output. Secrets are removed from the environment before child processes start. |
 
 ## Auto-switch
 
@@ -101,6 +102,23 @@ limit resets. If every account is over the threshold, it stays where it is.
 - A manual switch (in the UI or the CLI) to an account auto mode wouldn't pick turns
   auto mode off, so it doesn't undo your choice.
 - State and recent events (no tokens) are kept in `~/.local/state/claude-account-ui/state.json`.
+
+## Codex
+
+The page also has a Codex card: the ChatGPT plan Codex is signed in with and how full
+its limits are (for example a 5-hour and a weekly window, or one 30-day window on Go).
+It only tracks. Codex has one login per machine, and nothing here switches it or
+counts it towards the Claude auto-switch.
+
+- Codex writes its rate-limit reading into its session logs
+  (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`) after every model reply. The server
+  reads the newest one, which costs no request.
+- When Codex has been idle for `INACTIVE_POLL_SECONDS` (300), or on *Check usage now*,
+  it asks `chatgpt.com/backend-api/wham/usage` (what Codex's `/status` shows), with
+  the access token from `~/.codex/auth.json` (`CODEX_HOME` if set). It never
+  refreshes that token; Codex does. If the token has expired, the card keeps the last
+  reading and says so.
+- Nothing to set up: if Codex is signed in with ChatGPT on the machine, the card fills in.
 
 ## Keeping secrets out of this public repo
 
@@ -153,7 +171,8 @@ Tests: `python3 -m unittest -v test_server test_check_secrets`.
 ## API
 
 - `POST /api/login` with `{"password": "..."}`, `POST /api/logout`, `POST /api/logout-all`
-- `GET /api/accounts` returns `{accounts: [{name, email, plan, label, active, usage, blocked}], error, auto}`
+- `GET /api/accounts` returns `{accounts: [{name, email, plan, label, active, usage, blocked}], codex, error, auto}`,
+  where `codex` is `{plan, label, email, limit_reached, windows, fetched_at, source, error}`
 - `POST /api/use` with `{"name": "<account>"}`, `POST /api/auto` with `{"enabled": true|false}`, `POST /api/check`
 
 All API calls except login and logout need the session cookie. POSTs must be

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tiny web UI + auto-switcher for which Claude subscription Claude Code uses.
+"""Tiny web UI + auto-switcher for which Claude subscription Claude Code uses,
+plus a read-only view of how much of its plan limits Codex (ChatGPT login) has used.
 
 Switching always goes through `claude-account use <name>`; this server never writes
 credential files. For auto-switching it *reads* each account's current OAuth access
@@ -7,11 +8,14 @@ token (live file for the active account, saved profile for the others) only to a
 Anthropic's usage endpoint how much of the 5-hour / weekly limits are used. Tokens
 stay in memory: they are never logged, stored, or sent anywhere but api.anthropic.com.
 It never refreshes tokens itself (Claude Code does that), so it can't break a login.
+Codex is tracked the same way: its own session logs first (no request), and its live
+access token from ~/.codex/auth.json only for chatgpt.com's usage endpoint.
 
 Every page and API call needs the master password (MASTER_PASSWORD). Configuration
 comes from the environment, or from `.env` next to this file; see `.env.example`.
 Never commit `.env`.
 """
+import base64
 import functools
 import hashlib
 import hmac
@@ -29,7 +33,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -115,6 +119,10 @@ CLAUDE_CFG = HOME / ".claude.json"  # Claude Code caches its own usage reading h
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 WINDOWS = {"five_hour": "5-hour", "seven_day": "Weekly",
            "seven_day_opus": "Weekly (Opus)", "seven_day_sonnet": "Weekly (Sonnet)"}
+
+CODEX_HOME = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"  # what Codex's /status reads
+CODEX_WINDOWS = {18000: "5-hour", 604800: "Weekly", 2592000: "Monthly"}
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 # "* main       someone@example.com  [max / default_claude_max_20x]"
@@ -436,6 +444,103 @@ def parse_ts(iso):
         return None
 
 
+# ---------------------------------------------------------------- Codex (tracking only)
+
+def codex_window(used, resets_epoch, seconds):
+    try:
+        s = int(seconds or 0)
+        resets = datetime.fromtimestamp(float(resets_epoch), timezone.utc).isoformat() if resets_epoch else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        s, resets = 0, None
+    label = CODEX_WINDOWS.get(s) or (f"{s // 86400}-day" if s and s % 86400 == 0
+                                     else f"{s // 3600}-hour" if s and s % 3600 == 0 else "Limit")
+    return {"u": float(used), "resets_at": resets, "label": label}
+
+
+def read_codex_auth():
+    """Codex's ChatGPT login: (access token if still valid else None, account id or None).
+    Codex refreshes the token itself; this never writes or logs it."""
+    try:
+        t = json.loads((CODEX_HOME / "auth.json").read_text()).get("tokens") or {}
+        token, account = t.get("access_token"), t.get("account_id")
+        claims = token.split(".")[1]
+        exp = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4))).get("exp") or 0
+    except (OSError, ValueError, AttributeError, IndexError, TypeError):
+        return None, None
+    return (token if exp > time.time() + 60 else None), account or "?"
+
+
+def parse_codex_usage(data):
+    if not isinstance(data, dict):
+        raise RuntimeError("Codex usage check returned something unexpected")
+    rl = data.get("rate_limit") if isinstance(data.get("rate_limit"), dict) else {}
+    windows = {}
+    for key in ("primary", "secondary"):
+        w = rl.get(key + "_window")
+        if isinstance(w, dict) and w.get("used_percent") is not None:
+            windows[key] = codex_window(w["used_percent"], w.get("reset_at"), w.get("limit_window_seconds"))
+    return {"windows": windows, "plan": data.get("plan_type"), "email": data.get("email"),
+            "limit_reached": bool(rl.get("limit_reached"))}
+
+
+def fetch_codex_usage(token, account):
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json",
+               "User-Agent": "claude-account-ui/1.0"}
+    if account and account != "?":
+        headers["ChatGPT-Account-Id"] = account
+    try:
+        with urllib.request.urlopen(urllib.request.Request(CODEX_USAGE_URL, headers=headers), timeout=10) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            raise RateLimited("ChatGPT rate-limited the Codex usage check") from None
+        raise RuntimeError(f"Codex usage check failed (HTTP {e.code})") from None
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        raise RuntimeError(f"Codex usage check failed ({type(e).__name__})") from None
+    return parse_codex_usage(data)
+
+
+def _last_codex_reading(path, tail=512 * 1024):
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, fh.seek(0, os.SEEK_END) - tail))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if '"rate_limits"' not in line:
+            continue
+        try:
+            ev = json.loads(line)
+            rl = ev["payload"]["rate_limits"]
+            at = datetime.fromisoformat(ev["timestamp"].replace("Z", "+00:00")).timestamp()
+            if not isinstance(rl, dict) or rl.get("limit_id") not in (None, "codex"):
+                continue
+            windows = {k: codex_window(w["used_percent"], w.get("resets_at"), (w.get("window_minutes") or 0) * 60)
+                       for k in ("primary", "secondary")
+                       if isinstance(w := rl.get(k), dict) and w.get("used_percent") is not None}
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        return at, {"windows": windows, "plan": rl.get("plan_type"),
+                    "limit_reached": bool(rl.get("rate_limit_reached_type"))}
+    return None
+
+
+def codex_session_reading(days=14):
+    """Codex's own latest rate-limit reading, from the session logs it writes after every
+    model reply: (when, usage) or None. Costs no request."""
+    day_dirs = sorted((CODEX_HOME / "sessions").glob("[0-9]*/[0-9]*/[0-9]*"), reverse=True)[:days]
+    files = []
+    for d in day_dirs:
+        for f in d.glob("rollout-*.jsonl"):
+            try:
+                files.append((f.stat().st_mtime, f))
+            except OSError:
+                pass
+    readings = [r for _, f in sorted(files, reverse=True)[:3] if (r := _last_codex_reading(f))]
+    return max(readings, key=lambda r: r[0], default=None)
+
+
 
 
 class AutoSwitcher:
@@ -448,6 +553,7 @@ class AutoSwitcher:
             s = {}
         self.enabled = s.get("enabled", True)
         self.usage = s.get("usage", {})  # name -> {windows, fetched_at, error}
+        self.codex = s.get("codex", {})  # Codex is only tracked, never switched
         self.events = s.get("events", [])[-50:]
         self.last_switch_at = s.get("last_switch_at", 0)
         self.last_active = s.get("last_active")
@@ -457,7 +563,7 @@ class AutoSwitcher:
     def save(self):
         try:
             atomic_write_json(STATE_FILE, {
-                "enabled": self.enabled, "usage": self.usage, "events": self.events[-50:],
+                "enabled": self.enabled, "usage": self.usage, "codex": self.codex, "events": self.events[-50:],
                 "last_switch_at": self.last_switch_at, "last_active": self.last_active})
         except OSError as e:
             log(f"could not save state: {e.strerror}")
@@ -534,8 +640,35 @@ class AutoSwitcher:
             except RuntimeError as e:
                 u["error"] = str(e)
 
+    def refresh_codex(self, force):
+        c, now = self.codex, time.time()
+        seen = codex_session_reading()
+        if seen and seen[0] > (c.get("fetched_at") or 0):
+            c.update(seen[1], fetched_at=seen[0], source="Codex's session log", error=None)
+        # While Codex is in use its log is fresh, so the endpoint is only asked when it's idle.
+        if not force and (now - (c.get("checked_at") or 0) < INACTIVE_POLL - 5
+                          or now - (c.get("fetched_at") or 0) < INACTIVE_POLL - 5
+                          or now < (c.get("retry_at") or 0)):
+            return
+        c["checked_at"] = now
+        token, account = read_codex_auth()
+        if not token:
+            c["error"] = ("Codex login token expired (Codex renews it when it next runs); showing the last reading"
+                          if account else "Codex isn't signed in with ChatGPT on this machine")
+            return
+        try:
+            c.update(fetch_codex_usage(token, account), fetched_at=now, source="ChatGPT",
+                     error=None, backoff=None, retry_at=None)
+        except RateLimited as e:
+            c["backoff"] = min((c.get("backoff") or POLL) * 2, MAX_BACKOFF)
+            c["retry_at"] = now + c["backoff"]
+            c["error"] = f"{e}; retrying in {c['backoff'] // 60 or 1} min"
+        except RuntimeError as e:
+            c["error"] = str(e)
+
     def tick(self, force=False):
         with LOCK:
+            self.refresh_codex(force)
             st = list_accounts()
             if st["error"]:
                 log(f"list failed: {st['error']}")
@@ -586,6 +719,14 @@ class AutoSwitcher:
                             for k, w in (u.get("windows") or {}).items()],
                 "fetched_at": u.get("fetched_at"), "error": u.get("error")}
             a["blocked"] = bool(self.blocking(a["name"], now))
+        c = self.codex
+        st["codex"] = {
+            "plan": c.get("plan"), "label": (c.get("plan") or "").replace("_", " ").title() or None,
+            "email": c.get("email"), "limit_reached": bool(c.get("limit_reached")),
+            "windows": [{"key": k, "label": w.get("label") or "Limit", "u": w["u"], "resets_at": w.get("resets_at"),
+                         "reset": (parse_ts(w.get("resets_at")) or now + 1) <= now}
+                        for k, w in sorted((c.get("windows") or {}).items())],
+            "fetched_at": c.get("fetched_at"), "source": c.get("source"), "error": c.get("error")}
         st["auto"] = {"enabled": self.enabled, "threshold": THRESHOLD, "priority": PRIORITY,
                       "poll": POLL, "last_check": self.last_check or None,
                       "events": list(reversed(self.events[-8:]))}

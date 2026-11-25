@@ -3,6 +3,7 @@ Nothing here touches real credentials, the real .env, or the network.
 
 Run: python3 -m unittest -v test_server
 """
+import base64
 import http.client
 import io
 import json
@@ -53,6 +54,10 @@ class FakeVM:
         self.live_tier = self.tiers[active]
         self.calls = []
         self.cc = None  # Claude Code's cached reading: (name, fetched_at, windows)
+        self.codex_token = ("codex-tok", "acct-1")
+        self.codex_usage = {"windows": {"primary": {"u": 23.0, "resets_at": iso(86400), "label": "Monthly"}},
+                            "plan": "go", "email": "someone@example.com", "limit_reached": False}
+        self.codex_log = None  # Codex's session-log reading: (when, usage)
 
     def list_accounts(self):
         return {"error": None, "accounts": [
@@ -80,16 +85,27 @@ class FakeVM:
     def claude_code_reading(self, names):
         return self.cc
 
+    def read_codex_auth(self):
+        return self.codex_token
+
+    def fetch_codex_usage(self, token, account):
+        self.calls.append(("codex", token, account))
+        return dict(self.codex_usage)
+
+    def codex_session_reading(self):
+        return self.codex_log
+
 
 class FakeVMMixin:
     def setUp(self):
         self.vm = FakeVM()
         self.patches = [mock.patch.object(server, n, getattr(self.vm, n))
-                        for n in ("list_accounts", "run", "read_oauth", "fetch_usage", "claude_code_reading")]
+                        for n in ("list_accounts", "run", "read_oauth", "fetch_usage", "claude_code_reading",
+                                  "read_codex_auth", "fetch_codex_usage", "codex_session_reading")]
         for p in self.patches:
             p.start()
         server.AUTO = self.auto = server.AutoSwitcher()
-        self.auto.enabled, self.auto.usage, self.auto.events = True, {}, []
+        self.auto.enabled, self.auto.usage, self.auto.events, self.auto.codex = True, {}, [], {}
         self.auto.last_switch_at, self.auto.last_active = 0, None
 
     def tearDown(self):
@@ -218,6 +234,116 @@ class ClaudeCodeReadingTests(unittest.TestCase):
             self.assertIsNone(server.claude_code_reading(["main", "backup"]))
             cfg.write_text("not json")
             self.assertIsNone(server.claude_code_reading(["main", "backup"]))
+
+
+class CodexTrackingTests(FakeVMMixin, unittest.TestCase):
+    def codex_calls(self):
+        return [c for c in self.vm.calls if c[0] == "codex"]
+
+    def test_asks_endpoint_and_shows_usage(self):
+        self.auto.tick()
+        self.assertEqual(self.codex_calls(), [("codex", "codex-tok", "acct-1")])
+        c = self.auto.decorate(server.list_accounts())["codex"]
+        self.assertEqual((c["label"], c["email"], c["source"], c["error"]), ("Go", "someone@example.com", "ChatGPT", None))
+        self.assertEqual([(w["label"], w["u"], w["reset"]) for w in c["windows"]], [("Monthly", 23.0, False)])
+
+    def test_fresh_session_log_saves_the_request(self):
+        self.vm.codex_log = (time.time() - 5, {"windows": {"primary": {"u": 41.0, "resets_at": iso(3600),
+                                                                       "label": "5-hour"}}, "plan": "plus"})
+        self.auto.tick()
+        self.assertEqual(self.codex_calls(), [])
+        self.assertEqual(self.auto.codex["windows"]["primary"]["u"], 41.0)
+        self.assertEqual(self.auto.codex["source"], "Codex's session log")
+        self.auto.tick(force=True)  # "Check usage now" still asks
+        self.assertEqual(len(self.codex_calls()), 1)
+
+    def test_older_session_log_does_not_replace_newer_reading(self):
+        self.auto.tick(force=True)
+        self.vm.codex_log = (time.time() - 3600, {"windows": {}, "plan": "go"})
+        self.auto.tick()
+        self.assertEqual(self.auto.codex["windows"]["primary"]["u"], 23.0)
+
+    def test_expired_token_keeps_last_reading(self):
+        self.auto.tick(force=True)
+        self.vm.codex_token = (None, "acct-1")
+        self.auto.tick(force=True)
+        self.assertEqual(len(self.codex_calls()), 1)
+        self.assertEqual(self.auto.codex["windows"]["primary"]["u"], 23.0)
+        self.assertIn("expired", self.auto.codex["error"])
+        self.vm.codex_token = (None, None)
+        self.auto.tick(force=True)
+        self.assertIn("isn't signed in", self.auto.codex["error"])
+
+    def test_rate_limited_codex_check_backs_off(self):
+        with mock.patch.object(server, "fetch_codex_usage", side_effect=server.RateLimited("rate-limited")):
+            self.auto.tick(force=True)
+        self.assertIn("retrying in", self.auto.codex["error"])
+        self.auto.codex["checked_at"] -= server.INACTIVE_POLL
+        self.auto.tick()
+        self.assertEqual(self.codex_calls(), [])
+
+    def test_codex_never_switches_or_blocks_claude(self):
+        self.vm.codex_usage["windows"]["primary"]["u"] = 100.0
+        self.vm.codex_usage["limit_reached"] = True
+        self.auto.tick()
+        self.assertEqual(self.uses(), [])
+        self.assertTrue(self.auto.decorate(server.list_accounts())["codex"]["limit_reached"])
+
+
+class CodexReadingTests(unittest.TestCase):
+    def test_parses_usage_endpoint(self):
+        got = server.parse_codex_usage({"plan_type": "plus", "email": "you@example.com", "rate_limit": {
+            "limit_reached": False,
+            "primary_window": {"used_percent": 12, "limit_window_seconds": 18000, "reset_at": 1_800_000_000},
+            "secondary_window": {"used_percent": 3, "limit_window_seconds": 604800, "reset_at": 1_800_500_000}}})
+        self.assertEqual(got["plan"], "plus")
+        self.assertEqual({k: (w["label"], w["u"]) for k, w in got["windows"].items()},
+                         {"primary": ("5-hour", 12.0), "secondary": ("Weekly", 3.0)})
+        self.assertEqual(server.parse_ts(got["windows"]["primary"]["resets_at"]), 1_800_000_000)
+        self.assertEqual(server.parse_codex_usage({"rate_limit": None})["windows"], {})
+        with self.assertRaises(RuntimeError):
+            server.parse_codex_usage([])
+
+    def test_window_labels(self):
+        self.assertEqual([server.codex_window(1, None, s)["label"] for s in (2592000, 172800, 7200, 61, None)],
+                         ["Monthly", "2-day", "2-hour", "Limit", "Limit"])
+
+    def test_reads_latest_reading_from_session_logs(self):
+        home = Path(tempfile.mkdtemp())
+        day = home / "sessions" / "2026" / "11" / "25"
+        day.mkdir(parents=True)
+
+        def ev(ts, rl):
+            return json.dumps({"timestamp": ts, "type": "event_msg", "payload": {"type": "token_count", "rate_limits": rl}})
+        codex = {"limit_id": "codex", "plan_type": "go", "rate_limit_reached_type": None,
+                 "primary": {"used_percent": 20.0, "window_minutes": 43200, "resets_at": 1_797_604_471}, "secondary": None}
+        (day / "rollout-a.jsonl").write_text("\n".join([
+            ev("2026-11-25T10:00:00.000Z", codex),
+            ev("2026-11-25T10:01:00.000Z", {**codex, "limit_id": "other", "primary": {"used_percent": 99.0}}),
+            ev("2026-11-25T10:02:00.000Z", None),
+            "not json"]) + "\n")
+        with mock.patch.object(server, "CODEX_HOME", home):
+            at, usage = server.codex_session_reading()
+            self.assertEqual(at, datetime(2026, 11, 25, 10, 0, tzinfo=timezone.utc).timestamp())
+            self.assertEqual(usage["windows"]["primary"]["u"], 20.0)
+            self.assertEqual(usage["windows"]["primary"]["label"], "Monthly")
+            self.assertNotIn("secondary", usage["windows"])
+        with mock.patch.object(server, "CODEX_HOME", home / "missing"):
+            self.assertIsNone(server.codex_session_reading())
+
+    def test_reads_token_only_while_valid(self):
+        home = Path(tempfile.mkdtemp())
+
+        def write(exp):
+            claims = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+            (home / "auth.json").write_text(json.dumps({"tokens": {"access_token": f"h.{claims}.s", "account_id": "acct"}}))
+        with mock.patch.object(server, "CODEX_HOME", home):
+            self.assertEqual(server.read_codex_auth(), (None, None))
+            write(time.time() + 3600)
+            self.assertEqual(server.read_codex_auth()[1], "acct")
+            self.assertTrue(server.read_codex_auth()[0].startswith("h."))
+            write(time.time() + 30)
+            self.assertEqual(server.read_codex_auth(), (None, "acct"))
 
 
 class AuthUnitTests(unittest.TestCase):
@@ -385,6 +511,7 @@ class HttpTests(HttpBase):
         r, body = self.req("GET", "/api/accounts", headers={"Cookie": cookie})
         self.assertEqual(r.status, 200)
         self.assertEqual(len(json.loads(body)["accounts"]), 2)
+        self.assertIn("codex", json.loads(body))
         r, body = self.req("GET", "/", headers={"Cookie": cookie})
         self.assertIn(b"Auto-switch", body)
         r, _ = self.req("POST", "/api/use", {"name": "backup"}, headers={"Cookie": cookie})

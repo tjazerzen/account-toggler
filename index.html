@@ -48,6 +48,7 @@
           padding: 0 8px; margin-left: 6px; color: var(--muted); vertical-align: 1px; font-weight: 500; }
   .pill.warn { color: var(--bar-full); border-color: var(--bar-full); }
   .badge { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .badge.quiet { color: var(--muted); font-weight: 500; }
   .usage { margin-top: 10px; display: grid; gap: 6px; }
   .meter { display: grid; grid-template-columns: 110px 1fr 44px; align-items: center; gap: 10px; font-size: 13px; }
   .meter .lbl { color: var(--muted); }
@@ -82,7 +83,7 @@
   <div class="head">
     <div>
       <h1>Claude account</h1>
-      <p class="sub">Which subscription Claude Code / T3 Code uses on this VM.</p>
+      <p class="sub">Which subscription Claude Code / T3 Code uses on this VM, and how much Codex has left.</p>
     </div>
     <button class="ghost" id="logout" type="button">Sign out</button>
   </div>
@@ -101,6 +102,9 @@
   </div>
 
   <div id="accounts"><p class="muted">Loading…</p></div>
+
+  <h2>Codex</h2>
+  <div id="codex"><p class="muted">Loading…</p></div>
 
   <div id="result"><strong></strong><pre></pre></div>
 
@@ -151,7 +155,7 @@
     r.querySelector("pre").textContent = text || "";
   }
 
-  function meter(w, threshold) {
+  function meter(w, threshold, tickLine = true) {
     const row = el("div", "meter");
     const u = w.reset ? 0 : w.u;
     const fill = el("div", "fill" + (u >= threshold ? " full" : u >= threshold - 20 ? " warn" : ""));
@@ -160,13 +164,47 @@
     const tick = el("div", "tick");
     tick.style.left = threshold + "%";
     tick.title = `auto-switch at ${threshold}%`;
-    track.append(fill, tick);
+    track.append(fill);
+    if (tickLine) track.append(tick);
     row.append(el("span", "lbl", w.label), track, el("span", "pct", Math.round(u) + "%"));
     if (w.resets_at) {
       const t = Date.parse(w.resets_at) / 1000;
       row.append(el("span", "resets", w.reset ? `reset ${rel(t)} (was ${Math.round(w.u)}%)` : `resets ${rel(t)} · ${when(t)}`));
     }
     return row;
+  }
+
+  function usageBox(usage, threshold, tickLine) {
+    const box = el("div", "usage");
+    for (const w of usage.windows || []) box.append(meter(w, threshold, tickLine));
+    if (!(usage.windows || []).length) box.append(el("div", "usage-note", usage.fetched_at ? "No usage in the current windows." : "Usage not checked yet."));
+    const bits = [];
+    if (usage.fetched_at) bits.push(`usage as of ${rel(usage.fetched_at)}` + (usage.source ? ` (from ${usage.source})` : ""));
+    if (usage.error) bits.push(usage.error);
+    if (bits.length) box.append(el("div", "usage-note", bits.join(" · ")));
+    return box;
+  }
+
+  function renderCodex(c, threshold) {
+    const box = $("#codex");
+    box.replaceChildren();
+    const card = el("div", "card");
+    const top = el("div", "top");
+    const info = el("div", "info");
+    const name = el("div", "name", "Codex");
+    if (c.label) {
+      const plan = el("span", "pill", c.label);
+      plan.title = c.plan;
+      name.append(plan);
+    }
+    if (c.limit_reached) name.append(el("span", "pill warn", "limit reached"));
+    info.append(name);
+    if (c.email) info.append(el("div", "email", c.email));
+    const badge = el("span", "badge quiet", "Tracking only");
+    badge.title = "Codex has one login on this VM; nothing here switches it.";
+    top.append(info, badge);
+    card.append(top, usageBox(c, threshold, false));
+    box.append(card);
   }
 
   function render(data) {
@@ -214,17 +252,11 @@
       }
       card.append(top);
 
-      const usage = a.usage || {};
-      const box = el("div", "usage");
-      for (const w of usage.windows || []) box.append(meter(w, threshold));
-      if (!(usage.windows || []).length) box.append(el("div", "usage-note", usage.fetched_at ? "No usage in the current windows." : "Usage not checked yet."));
-      const bits = [];
-      if (usage.fetched_at) bits.push(`usage as of ${rel(usage.fetched_at)}`);
-      if (usage.error) bits.push(usage.error);
-      if (bits.length) box.append(el("div", "usage-note", bits.join(" · ")));
-      card.append(box);
+      card.append(usageBox(a.usage || {}, threshold, true));
       list.append(card);
     }
+
+    renderCodex(data.codex || {}, threshold);
 
     const ev = $("#events");
     ev.replaceChildren();
