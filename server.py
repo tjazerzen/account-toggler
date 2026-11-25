@@ -121,6 +121,9 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 WINDOWS = {"five_hour": "5-hour", "seven_day": "Weekly",
            "seven_day_opus": "Weekly (Opus)", "seven_day_sonnet": "Weekly (Sonnet)"}
 
+SCOPED_KEYS = {"weekly": "seven_day", "session": "five_hour"}
+SCOPED_LABELS = {"weekly": "Weekly", "session": "5-hour"}
+
 CODEX_HOME = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
 CODEX_CLI = os.environ.get("CODEX_ACCOUNT_BIN", str(HOME / ".local/bin/codex-account"))
 CODEX_ACC_DIR = Path(os.environ.get("CODEX_ACCOUNTS_DIR") or HOME / ".codex-accounts")
@@ -404,6 +407,19 @@ def parse_windows(data):
         w = data.get(key)
         if isinstance(w, dict) and w.get("utilization") is not None:
             windows[key] = {"u": float(w["utilization"]), "resets_at": w.get("resets_at")}
+    # Model-scoped limits (e.g. a weekly Fable limit) only appear in `limits`.
+    for lim in data.get("limits") or []:
+        try:
+            model = ((lim.get("scope") or {}).get("model") or {}).get("display_name")
+            group = str(lim.get("group") or "")
+            if not model or lim.get("percent") is None:
+                continue
+            key = SCOPED_KEYS.get(group, group) + "_" + re.sub(r"[^a-z0-9]+", "_", model.lower()).strip("_")
+            if key not in windows:
+                windows[key] = {"u": float(lim["percent"]), "resets_at": lim.get("resets_at"),
+                                "label": f"{SCOPED_LABELS.get(group, group.title())} ({model})"}
+        except (AttributeError, TypeError, ValueError):
+            continue
     return windows
 
 
@@ -613,7 +629,7 @@ class AutoSwitcher:
         for key, w in ((usage.get(name) or {}).get("windows") or {}).items():
             resets = parse_ts(w.get("resets_at"))
             if w["u"] >= THRESHOLD and (resets is None or resets > now):
-                label = w.get("label") if codex else WINDOWS.get(key, key)
+                label = w.get("label") if codex else (WINDOWS.get(key) or w.get("label"))
                 hits.append(f"{name} {label or key} limit at {w['u']:.0f}%")
         return hits
 
@@ -725,13 +741,33 @@ class AutoSwitcher:
                        "Turn it back on to let it manage Codex accounts again.")
         self.save()
 
+    def sync_logins(self, cli, what):
+        """Let the CLI pick up the live login: a new account is saved under a name from its
+        email, a known one gets its saved copy refreshed. Returns the names it added."""
+        code, out, err = run("sync", cli=cli)
+        if code:
+            log(f"{what} sync failed: {(err or out).strip()[:200]}")
+            return set()
+        added = set()
+        for line in out.splitlines():
+            m = re.match(r"Added '([A-Za-z0-9_.-]{1,64})': (.{0,200})$", line)
+            if m:
+                added.add(m.group(1))
+                self.event(f"New {what} login found and saved as '{m.group(1)}': {m.group(2)}", "switch")
+            elif line.startswith(("Updated", "Live login is")):
+                log(f"{what} sync: {line}")
+        return added
+
     def tick_codex(self, force):
+        added = self.sync_logins(CODEX_CLI, "Codex")
         st = list_codex_accounts()
         if st["error"]:
             log(f"codex list failed: {st['error']}")
             return
         names = [a["name"] for a in st["accounts"]]
         active = next((a["name"] for a in st["accounts"] if a["active"]), None)
+        if active in added:  # a fresh login, not a choice: auto-switch stays as it was
+            self.codex_last_active, self.codex_active_since = active, time.time()
         if self.codex_last_active and active and active != self.codex_last_active:
             self.event(f"Codex account changed outside the switcher: {self.codex_last_active} → {active}")
             self.codex_manual_switch(active, names)
@@ -757,12 +793,15 @@ class AutoSwitcher:
                 self.tick_codex(force)
             except Exception as e:  # Codex trouble must never stop the Claude side
                 log(f"codex tick crashed: {type(e).__name__}")
+            added = self.sync_logins(CLI, "Claude")
             st = list_accounts()
             if st["error"]:
                 log(f"list failed: {st['error']}")
                 return
             names = [a["name"] for a in st["accounts"]]
             active = next((a["name"] for a in st["accounts"] if a["active"]), None)
+            if active in added:  # a fresh login, not a choice: auto-switch stays as it was
+                self.last_active = active
             if self.last_active and active and active != self.last_active:
                 self.event(f"Account changed outside the auto-switcher: {self.last_active} → {active}")
                 self.manual_switch(active, names)

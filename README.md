@@ -4,8 +4,8 @@ A small, password-protected web page for switching which Claude subscription
 Claude Code (and anything that runs it, such as T3 Code) uses on a machine. It can
 also switch automatically when an account gets close to its usage limit.
 
-It sits on top of a `claude-account` CLI (`list`, `use <name>`) that keeps one
-saved login per account. The page lists the accounts, highlights the active one,
+It sits on top of a `claude-account` CLI (`scripts/claude-account`: `list`, `use <name>`,
+`sync`) that keeps one saved login per account. The page lists the accounts, highlights the active one,
 shows 5-hour and weekly usage, and switches with one click. It also switches which
 ChatGPT account [Codex](#codex) uses, the same way (`scripts/codex-account`).
 
@@ -20,6 +20,7 @@ ChatGPT account [Codex](#codex) uses, the same way (`scripts/codex-account`).
 ```sh
 cp .env.example .env && chmod 600 .env    # then set MASTER_PASSWORD and SESSION_SECRET
 scripts/install-hooks.sh                  # leak-check hooks (see below)
+ln -s "$PWD/scripts/claude-account" "$PWD/scripts/codex-account" ~/.local/bin/
 python3 server.py                         # or install the systemd user service:
 
 cp claude-account-ui.service ~/.config/systemd/user/
@@ -84,7 +85,8 @@ hostnames within minutes.
 ## Auto-switch
 
 Every `POLL_SECONDS` (60) the server asks Anthropic's usage endpoint how full each
-account's 5-hour and weekly limits are. When the active account reaches
+account's 5-hour and weekly limits are, including model-scoped ones such as a weekly
+Fable limit (shown as "Weekly (Fable)"). When the active account reaches
 `THRESHOLD` % (90) of any limit, it runs `claude-account use <next>`. Accounts are
 preferred in `PRIORITY` order, so it moves back to the first one once that one's
 limit resets. If every account is over the threshold, it stays where it is.
@@ -102,6 +104,25 @@ limit resets. If every account is over the threshold, it stays where it is.
 - A manual switch (in the UI or the CLI) to an account auto mode wouldn't pick turns
   auto mode off, so it doesn't undo your choice.
 - State and recent events (no tokens) are kept in `~/.local/state/claude-account-ui/state.json`.
+
+## New logins are picked up by themselves
+
+Every check also runs `claude-account sync` and `codex-account sync`. So logging in
+another account the normal way (`/login` in Claude Code, `codex login`) is enough:
+
+- If the live login belongs to an account that isn't saved, it's saved under a name
+  taken from its email (`jane.doe`, then `jane.doe-2` on a clash), and the page notes
+  it under Recent activity. That doesn't count as a manual choice: auto-switch stays
+  on and may move back to a preferred account that has room.
+- If it belongs to a saved account, that account's saved copy is refreshed, so a
+  later login over it loses nothing. A login that was already live under another
+  saved name is marked active.
+- Claude's login is in two files (`~/.claude/.credentials.json` and `~/.claude.json`),
+  so `claude-account sync` acts only after it has seen the same login on two checks in
+  a row. That way it never pairs one account's token with another's details mid-login.
+  Codex's `auth.json` names its own account, so it needs no wait.
+- `use` matches the live login by account UUID / ChatGPT account id and refuses to
+  switch away from one that isn't saved.
 
 ## Codex
 
@@ -187,7 +208,7 @@ codex-account use backup             # or: codex-account toggle
   repo's GitHub issues, PRs, comments or Dependabot PR bodies. Anyone can write text
   there that tries to make the agent leak credentials. Review outside changes by hand.
 
-Tests: `python3 -m unittest -v test_server test_check_secrets test_codex_account`.
+Tests: `python3 -m unittest -v test_server test_check_secrets test_codex_account test_claude_account`.
 
 ## API
 

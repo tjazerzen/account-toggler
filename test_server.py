@@ -61,6 +61,7 @@ class FakeVM:
                                 "plan": "plus", "email": f"{n}@example.com", "limit_reached": False}
                             for n in ("main", "spare")}
         self.codex_log = None  # Codex's latest session-log reading: (when, usage)
+        self.sync_out = {"claude": "", "codex": ""}  # what the next `sync` prints
 
     def list_accounts(self):
         return {"error": None, "accounts": [
@@ -68,6 +69,11 @@ class FakeVM:
             for n in ("main", "backup")]}
 
     def run(self, *args, cli=None):
+        if args == ("sync",):
+            which = "codex" if cli == server.CODEX_CLI else "claude"
+            out, self.sync_out[which] = self.sync_out[which], ""
+            self.calls.append(("sync", which))
+            return 0, out, ""
         if cli == server.CODEX_CLI:
             self.calls.append(("codex-use", args[1]))
             self.codex_active = args[1]
@@ -234,6 +240,51 @@ class AutoSwitchTests(FakeVMMixin, unittest.TestCase):
         self.auto.tick(force=True)
         self.assertEqual(self.auto.usage["main"]["windows"]["seven_day"]["u"], 20.0)
         self.assertEqual(self.uses(), [])
+
+
+class NewLoginTests(FakeVMMixin, unittest.TestCase):
+    def test_new_claude_login_is_announced_and_does_not_pause_auto(self):
+        self.vm.usage["main"] = {"five_hour": {"u": 10.0, "resets_at": iso(3600)}}
+        self.auto.tick(force=True)
+        self.vm.active = "backup"  # someone ran /login with a new account; sync saved it
+        self.vm.live_tier = self.vm.tiers["backup"]
+        self.vm.sync_out["claude"] = "Added 'backup': backup@example.com  [max / x]\n"
+        self.auto.tick(force=True)
+        self.assertTrue(self.auto.enabled)
+        self.assertTrue(any("New Claude login found and saved as 'backup'" in e["msg"] for e in self.auto.events))
+        self.assertEqual(self.uses(), ["main"])  # main is preferred and has room: back to it
+
+    def test_new_codex_login_is_announced_and_does_not_pause_auto(self):
+        self.auto.tick(force=True)
+        self.vm.codex_active = "spare"
+        self.vm.sync_out["codex"] = "Added 'spare': spare@example.com [plus]\n"
+        self.auto.tick(force=True)
+        self.assertTrue(self.auto.codex_enabled)
+        self.assertTrue(any("New Codex login found and saved as 'spare'" in e["msg"] for e in self.auto.events))
+
+    def test_sync_runs_for_both_every_tick(self):
+        self.auto.tick()
+        self.assertEqual(sorted(c[1] for c in self.vm.calls if c[0] == "sync"), ["claude", "codex"])
+
+
+class ScopedLimitTests(unittest.TestCase):
+    def test_model_scoped_weekly_limit_is_shown(self):
+        got = server.parse_windows({"seven_day": {"utilization": 38.0, "resets_at": "r"}, "seven_day_opus": None,
+                                    "limits": [
+            {"kind": "weekly_all", "group": "weekly", "percent": 38, "resets_at": "r", "scope": None},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 21, "resets_at": "r2",
+             "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
+            {"kind": "odd", "group": "weekly", "percent": None, "scope": {"model": {"display_name": "X"}}},
+            "junk"]})
+        self.assertEqual(got, {"seven_day": {"u": 38.0, "resets_at": "r"},
+                               "seven_day_fable": {"u": 21.0, "resets_at": "r2", "label": "Weekly (Fable)"}})
+
+    def test_scoped_limit_label_in_view_and_blocking(self):
+        a = server.AutoSwitcher()
+        a.usage = {"main": {"windows": {"seven_day_fable": {"u": 95.0, "resets_at": iso(3600), "label": "Weekly (Fable)"}}}}
+        self.assertEqual(a.blocking("main", time.time()), ["main Weekly (Fable) limit at 95%"])
+        self.assertEqual(a.windows_view(a.usage["main"]["windows"], time.time(), server.WINDOWS)[0]["label"],
+                         "Weekly (Fable)")
 
 
 class ClaudeCodeReadingTests(unittest.TestCase):

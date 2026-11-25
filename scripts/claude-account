@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Switch which Claude subscription Claude Code (and T3 Code) uses on this machine.
+
+  claude-account                 show the active account
+  claude-account list            list saved accounts
+  claude-account use <name>      switch to a saved account
+  claude-account toggle          switch to the other account (when exactly two are saved)
+  claude-account save <name>     save the currently logged-in account under <name>
+  claude-account login <name>    log in a new account in isolation and save it as <name>
+  claude-account sync            pick up the live login: keep its saved copy fresh, or save
+                                 it under a name from its email when it's a new account
+
+Saved logins live in ~/.claude-accounts/<name>/; the live one is ~/.claude/.credentials.json
+plus `oauthAccount` in ~/.claude.json. Accounts are matched by their account UUID.
+After switching, start a NEW thread in T3 Code (running threads keep their old login).
+"""
+import hashlib, json, os, re, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+HOME = Path.home()
+ACC = Path(os.environ.get("CLAUDE_ACCOUNTS_DIR") or HOME / ".claude-accounts")
+LIVE = Path(os.environ.get("CLAUDE_CREDENTIALS") or HOME / ".claude" / ".credentials.json")
+CFG = Path(os.environ.get("CLAUDE_JSON") or HOME / ".claude.json")
+CUR = ACC / "current"
+SEEN = ACC / ".sync-seen"  # hash of the live login seen by the previous sync (no secrets)
+CLAUDE = shutil.which("claude") or str(HOME / ".local/bin/claude")
+
+
+def atomic_write(path, data, mode=0o600):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent)
+    with os.fdopen(fd, "w") as f:
+        f.write(data)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def load(path, default=None):
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception:
+        return default
+
+
+def current():
+    return CUR.read_text().strip() if CUR.exists() else None
+
+
+def accounts():
+    return sorted(p.name for p in ACC.iterdir() if p.is_dir() and (p / "credentials.json").exists()) if ACC.exists() else []
+
+
+def describe(creds, oauth):
+    o = (creds or {}).get("claudeAiOauth", {})
+    return f"{(oauth or {}).get('emailAddress','?')}  [{o.get('subscriptionType','?')} / {o.get('rateLimitTier','?')}]"
+
+
+def owner_of(uuid):
+    if not uuid:
+        return None
+    return next((a for a in accounts() if (load(ACC / a / "oauthAccount.json", {}) or {}).get("accountUuid") == uuid), None)
+
+
+def name_for(email):
+    base = re.sub(r"[^A-Za-z0-9_.-]", "-", (email or "account").split("@")[0])[:40].strip(".-") or "account"
+    name, i = base, 2
+    while (ACC / name).exists():
+        name, i = f"{base}-{i}", i + 1
+    return name
+
+
+def save(name):
+    if not LIVE.exists():
+        sys.exit("No live Claude login found to save.")
+    d = ACC / name
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(ACC, 0o700)
+    atomic_write(d / "credentials.json", LIVE.read_text())
+    atomic_write(d / "oauthAccount.json", json.dumps(load(CFG, {}).get("oauthAccount", {}), indent=2))
+
+
+def use(name):
+    d = ACC / name
+    if not (d / "credentials.json").exists():
+        sys.exit(f"No saved account '{name}'. Saved: {', '.join(accounts()) or 'none'}")
+    live_uuid = ((load(CFG, {}) or {}).get("oauthAccount") or {}).get("accountUuid")
+    cur = owner_of(live_uuid) if live_uuid else current()
+    if LIVE.exists() and live_uuid and not cur:
+        sys.exit("The live login isn't saved; switching would lose it. Save it first: claude-account save <name>")
+    if cur == name:
+        print(f"Already on '{name}'.")
+        return status()
+    if cur:
+        save(cur)  # keep the latest refreshed tokens of the account we leave
+    atomic_write(LIVE, (d / "credentials.json").read_text())
+    cfg = load(CFG, {})
+    cfg["oauthAccount"] = load(d / "oauthAccount.json", {})
+    atomic_write(CFG, json.dumps(cfg, indent=2), mode=0o600)
+    atomic_write(CUR, name + "\n", mode=0o600)
+    print(f"Switched to '{name}'. Start a new thread in T3 Code to use it.")
+    status()
+
+
+def toggle():
+    accs = accounts()
+    if len(accs) != 2:
+        sys.exit(f"toggle needs exactly two saved accounts, found: {', '.join(accs)}. Use: claude-account use <name>")
+    use(accs[1] if current() == accs[0] else accs[0])
+
+
+def login(name):
+    d = ACC / name
+    cfgdir = d / "config"
+    cfgdir.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=str(cfgdir))
+    subprocess.run([CLAUDE, "auth", "login", "--claudeai"], env=env)
+    creds = cfgdir / ".credentials.json"
+    if not creds.exists():
+        sys.exit("Login did not finish; nothing saved.")
+    atomic_write(d / "credentials.json", creds.read_text())
+    atomic_write(d / "oauthAccount.json", json.dumps(load(cfgdir / ".claude.json", {}).get("oauthAccount", {}), indent=2))
+    print(f"Saved '{name}': {describe(load(d/'credentials.json'), load(d/'oauthAccount.json'))}")
+
+
+def sync():
+    """Run regularly (the web UI does, every minute). Acts only when it has seen the same live
+    login twice in a row, so it never pairs credentials and account info mid-login."""
+    try:
+        creds = LIVE.read_text()
+    except OSError:
+        return print("No live Claude login.")
+    oauth = (load(CFG, {}) or {}).get("oauthAccount") or {}
+    uuid = oauth.get("accountUuid")
+    if not uuid or not (load(LIVE, {}) or {}).get("claudeAiOauth"):
+        return print("No live Claude login.")
+    seen = hashlib.sha256(f"{uuid}\n{creds}".encode()).hexdigest()
+    before = SEEN.read_text().strip() if SEEN.exists() else None
+    atomic_write(SEEN, seen + "\n")
+    if before != seen:
+        return print("Live login changed since the last sync; waiting for it to settle.")
+    owner = owner_of(uuid)
+    if owner is None:
+        owner = name_for(oauth.get("emailAddress"))
+        save(owner)
+        atomic_write(CUR, owner + "\n")
+        return print(f"Added '{owner}': {describe(load(LIVE), oauth)}")
+    if current() != owner:
+        atomic_write(CUR, owner + "\n")
+        print(f"Live login is '{owner}'; marked it active.")
+    if (ACC / owner / "credentials.json").read_text() != creds:
+        atomic_write(ACC / owner / "credentials.json", creds)
+        print(f"Updated the saved login of '{owner}'.")
+
+
+def status():
+    print(f"Active: {current() or '(not tracked)'}  ->  {describe(load(LIVE), load(CFG, {}).get('oauthAccount'))}")
+
+
+def lst():
+    cur = current()
+    for a in accounts():
+        d = ACC / a
+        print(f"{'*' if a == cur else ' '} {a:10} {describe(load(d/'credentials.json'), load(d/'oauthAccount.json'))}")
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    cmd = args[0] if args else "status"
+    if cmd == "status": status()
+    elif cmd == "list": lst()
+    elif cmd == "toggle": toggle()
+    elif cmd == "sync": sync()
+    elif cmd in ("use", "save", "login") and len(args) == 2: {"use": use, "save": save, "login": login}[cmd](args[1])
+    elif cmd in ("use", "save", "login"): sys.exit(f"Usage: claude-account {cmd} <name>")
+    elif cmd in ("-h", "--help", "help"): print(__doc__)
+    else: use(cmd)

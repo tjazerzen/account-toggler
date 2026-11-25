@@ -78,6 +78,17 @@ class CodexAccountTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse((self.acc / "again").exists())
 
+    def test_sync_saves_a_new_login_and_refreshes_a_known_one(self):
+        self.setup_two()
+        (self.home / "auth.json").write_text(login("acct-a", "a@example.com", refresh="r9"))
+        self.assertIn("Updated", self.cli("sync").stdout)
+        self.assertEqual(self.saved("main")["refresh_token"], "r9")
+        self.assertEqual(self.cli("sync").stdout, "")  # nothing new
+        (self.home / "auth.json").write_text(login("acct-c", "new.person@example.com"))  # a plain `codex login`
+        self.assertIn("Added 'new.person'", self.cli("sync").stdout)
+        self.assertEqual(self.saved("new.person")["account_id"], "acct-c")
+        self.assertEqual(self.saved("main")["refresh_token"], "r9")  # the old login is kept
+
     def test_unknown_account(self):
         self.setup_two()
         self.assertNotEqual(self.cli("use", "nope").returncode, 0)

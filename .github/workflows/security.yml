@@ -64,4 +64,4 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: python3 -m unittest -v test_server test_check_secrets test_codex_account
+      - run: python3 -m unittest -v test_server test_check_secrets test_codex_account test_claude_account

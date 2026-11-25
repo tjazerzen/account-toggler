@@ -7,6 +7,8 @@
   codex-account toggle          switch to the other account (when exactly two are saved)
   codex-account save <name>     save the login Codex is using now under <name>
   codex-account login <name>    sign in a new account (device code) in isolation and save it
+  codex-account sync            pick up the live login: keep its saved copy fresh, or save it
+                                under a name from its email when it's a new account
 
 Saved logins live in ~/.codex-accounts/<name>/auth.json; Codex's live login is
 $CODEX_HOME/auth.json (~/.codex/auth.json). The active account is whichever saved one
@@ -15,7 +17,7 @@ Codex renews its tokens in the live file (the refresh token changes each time), 
 switch first copies the live login back into its own slot, then puts the new one live.
 Tokens are never printed.
 """
-import base64, fcntl, json, os, shutil, subprocess, sys, tempfile, time
+import base64, fcntl, json, os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 HOME = Path.home()
@@ -151,6 +153,34 @@ def login(name):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def name_for(email):
+    base = re.sub(r"[^A-Za-z0-9_.-]", "-", (email or "account").split("@")[0])[:40].strip(".-") or "account"
+    name, i = base, 2
+    while (ACC / name).exists():
+        name, i = f"{base}-{i}", i + 1
+    return name
+
+
+def sync():
+    """Run regularly (the web UI does, every minute). The live auth.json names its own
+    account, so a new `codex login` is saved under a name from its email, and a known one
+    gets its saved copy refreshed (so a later login over it loses nothing)."""
+    with codex_lock():
+        live = ident(LIVE)
+        if not live:
+            return print("Codex isn't signed in with ChatGPT.")
+        owner = owner_of(live)
+        data = LIVE.read_text()
+        if owner is None:
+            owner = name_for(live[1])
+            atomic_write(ACC / owner / "auth.json", data)
+            os.chmod(ACC, 0o700)
+            return print(f"Added '{owner}': {live[1]} [{live[2]}]")
+        if (ACC / owner / "auth.json").read_text() != data:
+            atomic_write(ACC / owner / "auth.json", data)
+            print(f"Updated the saved login of '{owner}'.")
+
+
 def status():
     live = ident(LIVE)
     print(f"Active: {current() or '(not saved)'}  ->  " + (f"{live[1]}  [{live[2]}]" if live else "not signed in"))
@@ -175,6 +205,7 @@ if __name__ == "__main__":
     if cmd == "status": status()
     elif cmd == "list": lst("--json" in args[1:])
     elif cmd == "toggle": toggle()
+    elif cmd == "sync": sync()
     elif cmd in ("use", "save", "login") and len(args) == 2: {"use": use, "save": save, "login": login}[cmd](args[1])
     elif cmd in ("use", "save", "login"): sys.exit(f"Usage: codex-account {cmd} <name>")
     elif cmd in ("-h", "--help", "help"): print(__doc__)
