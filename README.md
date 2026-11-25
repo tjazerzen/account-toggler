@@ -1,8 +1,9 @@
-# claude-account-ui
+# account-toggler
 
 A small, password-protected web page for switching which Claude subscription
-Claude Code (and anything that runs it, such as T3 Code) uses on a machine. It can
-also switch automatically when an account gets close to its usage limit.
+Claude Code (and anything that runs it, such as T3 Code) uses on a machine, and which
+ChatGPT account Codex uses. It can also switch automatically when an account gets
+close to its usage limit.
 
 It sits on top of a `claude-account` CLI (`scripts/claude-account`: `list`, `use <name>`,
 `sync`) that keeps one saved login per account. The page lists the accounts, highlights the active one,
@@ -23,9 +24,9 @@ scripts/install-hooks.sh                  # leak-check hooks (see below)
 ln -s "$PWD/scripts/claude-account" "$PWD/scripts/codex-account" ~/.local/bin/
 python3 server.py                         # or install the systemd user service:
 
-cp claude-account-ui.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now claude-account-ui
-journalctl --user -u claude-account-ui -f
+cp account-toggler.service ~/.config/systemd/user/   # paths assume the checkout is ~/code/account-toggler
+systemctl --user daemon-reload && systemctl --user enable --now account-toggler
+journalctl --user -u account-toggler -f
 ```
 
 The server refuses to start if `MASTER_PASSWORD` is shorter than 20 characters,
@@ -50,14 +51,14 @@ to `.env` and restart the service:
 
 ```sh
 PUBLIC_PORT=8767
-ALLOWED_HOSTS=claude.example.com   # requests for any other Host get 421
+ALLOWED_HOSTS=toggler.example.com   # requests for any other Host get 421
 ```
 
 - **Cloudflare Tunnel + Cloudflare Access (strongly recommended):** no open ports on
   the VM. Point a public hostname at `http://127.0.0.1:8767`, add an Access policy
   that allows only your email, and turn on *Always Use HTTPS*. Bots then never reach
   the password page at all.
-- **Caddy:** `claude.example.com { reverse_proxy 127.0.0.1:8767 }` gives automatic
+- **Caddy:** `toggler.example.com { reverse_proxy 127.0.0.1:8767 }` gives automatic
   HTTPS. Caddy sets the forwarded headers itself. Also set
   `request_buffers 4KiB` and short `read_header`/`read_body` timeouts.
 
@@ -72,7 +73,7 @@ hostnames within minutes.
 
 | Threat | Defence |
 |---|---|
-| Password guessing | 20+ character random password. Each IP (IPv6 per /64) gets 5 wrong tries per 15 min, and all local connections share one counter. 20 wrong tries per hour from the whole internet lock new internet logins for the hour. Browsers that signed in before (a signed device cookie) and the SSH tunnel are exempt, so an attacker can't lock you out. Each failure adds 1 s, and at most 4 password checks run at once. Failures are logged with the client IP (`journalctl --user -u claude-account-ui \| grep FAILED`). |
+| Password guessing | 20+ character random password. Each IP (IPv6 per /64) gets 5 wrong tries per 15 min, and all local connections share one counter. 20 wrong tries per hour from the whole internet lock new internet logins for the hour. Browsers that signed in before (a signed device cookie) and the SSH tunnel are exempt, so an attacker can't lock you out. Each failure adds 1 s, and at most 4 password checks run at once. Failures are logged with the client IP (`journalctl --user -u account-toggler \| grep FAILED`). |
 | Stolen or forged cookie | HMAC-SHA256 signed, server-side session list (sign-out really revokes; *Sign out everywhere* revokes all), expires after `SESSION_DAYS` (14), HttpOnly, SameSite=Strict. Remembered-browser (device) cookies are also kept server-side, and *Sign out everywhere* forgets them. From the internet only the `__Host-`/Secure cookie over HTTPS is accepted. Changing the password or `SESSION_SECRET` also invalidates every cookie. |
 | Eavesdropping | Logins and cookies over plain HTTP from the internet are refused. HSTS is sent over HTTPS. |
 | CSRF / other sites | SameSite=Strict cookies, same-origin JSON-only POSTs (CORS preflight never granted), Origin check. |
@@ -103,7 +104,8 @@ limit resets. If every account is over the threshold, it stays where it is.
   saved login.
 - A manual switch (in the UI or the CLI) to an account auto mode wouldn't pick turns
   auto mode off, so it doesn't undo your choice.
-- State and recent events (no tokens) are kept in `~/.local/state/claude-account-ui/state.json`.
+- State and recent events (no tokens) are kept in `~/.local/state/account-toggler/state.json`
+  (`~/.local/state/claude-account-ui/` on installs from before the rename, until you move it).
 
 ## New logins are picked up by themselves
 

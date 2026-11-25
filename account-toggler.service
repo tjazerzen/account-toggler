@@ -1,13 +1,14 @@
 [Unit]
-Description=Claude account switcher web UI + auto-switch
+Description=Account toggler: Claude Code + Codex account switcher web UI and auto-switch
 After=default.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/code/claude-account-ui
+WorkingDirectory=%h/code/account-toggler
 # All settings (password, port, account order, ...) come from .env in WorkingDirectory.
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 %h/code/claude-account-ui/server.py
+ExecStart=/usr/bin/python3 %h/code/account-toggler/server.py
+SyslogIdentifier=account-toggler
 Restart=on-failure
 RestartSec=3
 UMask=0077

@@ -84,7 +84,14 @@ POLL = int(os.environ.get("POLL_SECONDS", "60"))
 INACTIVE_POLL = int(os.environ.get("INACTIVE_POLL_SECONDS", "300"))
 MAX_BACKOFF = 600  # longest pause after Anthropic rate-limits the usage check (HTTP 429)
 COOLDOWN = int(os.environ.get("COOLDOWN_SECONDS", "180"))
-STATE_FILE = Path(os.environ.get("STATE_FILE", HOME / ".local/state/claude-account-ui/state.json"))
+def default_state_dir(home):
+    """State moved from ~/.local/state/claude-account-ui when the tool was renamed; an
+    install that still only has the old folder keeps using it."""
+    new, old = home / ".local/state/account-toggler", home / ".local/state/claude-account-ui"
+    return old if not new.exists() and old.exists() else new
+
+
+STATE_FILE = Path(os.environ.get("STATE_FILE", default_state_dir(HOME) / "state.json"))
 SESSIONS_FILE = Path(os.environ.get("SESSIONS_FILE", STATE_FILE.parent / "sessions.json"))
 DEVICES_FILE = Path(os.environ.get("DEVICES_FILE", STATE_FILE.parent / "devices.json"))
 LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
@@ -159,6 +166,9 @@ def atomic_write_json(path, obj):
 # ---------------------------------------------------------------- auth
 
 _EPHEMERAL_SECRET = secrets.token_hex(32)
+# Fixed for compatibility (the tool's old name): every session and device cookie key is
+# derived from it, so changing it signs every browser out. Same for the cookie names
+# (cas_session, cas_device) and the HMAC labels below.
 _PASSWORD_SALT = b"claude-account-ui/password-v1"
 
 
@@ -427,7 +437,7 @@ def fetch_usage(token):
     req = urllib.request.Request(USAGE_URL, headers={
         "Authorization": "Bearer " + token,
         "anthropic-beta": "oauth-2025-04-20",
-        "User-Agent": "claude-account-ui/1.0",
+        "User-Agent": "account-toggler/1.0",
     })
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -525,7 +535,7 @@ def parse_codex_usage(data):
 
 def fetch_codex_usage(token, account):
     headers = {"Authorization": "Bearer " + token, "Accept": "application/json",
-               "User-Agent": "claude-account-ui/1.0"}
+               "User-Agent": "account-toggler/1.0"}
     if account and account != "?":
         headers["ChatGPT-Account-Id"] = account
     try:
@@ -1262,7 +1272,7 @@ def main():
         public = Server((BIND, PUBLIC_PORT), Handler, public=True)
         threading.Thread(target=public.serve_forever, name="public", daemon=True).start()
     threading.Thread(target=AUTO.loop, name="auto-switch", daemon=True).start()
-    log(f"claude-account-ui: local http://{BIND}:{PORT}/"
+    log(f"account-toggler: local http://{BIND}:{PORT}/"
         + (f"; public listener {BIND}:{PUBLIC_PORT} for {', '.join(sorted(PUBLIC_HOSTS))}" if PUBLIC_PORT else "")
         + f"; auto-switch {'on' if AUTO.enabled else 'off'} at {THRESHOLD:g}%, "
         + f"order {','.join(PRIORITY) or '(list order)'}; "

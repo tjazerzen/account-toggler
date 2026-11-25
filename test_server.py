@@ -26,13 +26,13 @@ os.environ.update({
     "THRESHOLD": "90",
     "MASTER_PASSWORD": PASSWORD,
     "SESSION_SECRET": "0" * 64,
-    "ALLOWED_HOSTS": "claude.example.com",
+    "ALLOWED_HOSTS": "toggler.example.com",
     "PUBLIC_PORT": "1",  # the tests start their own listeners on random ports
 })
 import server  # noqa: E402
 
 server.FAIL_DELAY = 0
-DOMAIN = "claude.example.com"
+DOMAIN = "toggler.example.com"
 
 
 def internet(ip, **extra):
@@ -265,6 +265,25 @@ class NewLoginTests(FakeVMMixin, unittest.TestCase):
     def test_sync_runs_for_both_every_tick(self):
         self.auto.tick()
         self.assertEqual(sorted(c[1] for c in self.vm.calls if c[0] == "sync"), ["claude", "codex"])
+
+
+class CompatibilityTests(unittest.TestCase):
+    """The tool was renamed (claude-account-ui -> account-toggler). These must NOT change
+    with it: each one would sign every browser out or lose the saved state."""
+
+    def test_cookie_keys_and_names_are_pinned(self):
+        self.assertEqual(server._PASSWORD_SALT, b"claude-account-ui/password-v1")
+        src = Path(server.__file__).read_text()
+        for needle in ('b"session-v2:"', 'b"device-v1:"', '"cas_session"', '"cas_device"'):
+            self.assertIn(needle, src)
+
+    def test_state_dir_falls_back_to_the_old_name(self):
+        home = Path(tempfile.mkdtemp())
+        self.assertEqual(server.default_state_dir(home).name, "account-toggler")
+        (home / ".local/state/claude-account-ui").mkdir(parents=True)
+        self.assertEqual(server.default_state_dir(home).name, "claude-account-ui")
+        (home / ".local/state/account-toggler").mkdir(parents=True)
+        self.assertEqual(server.default_state_dir(home).name, "account-toggler")
 
 
 class ScopedLimitTests(unittest.TestCase):
