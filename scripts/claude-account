@@ -50,15 +50,12 @@ def accounts():
     return sorted(p.name for p in ACC.iterdir() if p.is_dir() and (p / "credentials.json").exists()) if ACC.exists() else []
 
 
-def plan(login_file):
-    """Only the plan fields of a login file (never its tokens)."""
-    o = (load(login_file, {}) or {}).get("claudeAiOauth") or {}
-    return str(o.get("subscriptionType") or "?"), str(o.get("rateLimitTier") or "?")
-
-
-def describe(login_file, profile):
-    kind, tier = plan(login_file)
-    return f"{(profile or {}).get('emailAddress', '?')}  [{kind} / {tier}]"
+def describe(profile):
+    """Email and plan from an account profile (oauthAccount), never from a login file."""
+    p = profile or {}
+    kind = str(p.get("organizationType") or "?").replace("claude_", "")
+    tier = str(p.get("organizationRateLimitTier") or p.get("userRateLimitTier") or "?")
+    return f"{p.get('emailAddress', '?')}  [{kind} / {tier}]"
 
 
 def owner_of(uuid):
@@ -125,7 +122,7 @@ def login(name):
         sys.exit("Login did not finish; nothing saved.")
     atomic_write(d / "credentials.json", creds.read_text())
     atomic_write(d / "oauthAccount.json", json.dumps(load(cfgdir / ".claude.json", {}).get("oauthAccount", {}), indent=2))
-    print(f"Saved '{name}': {describe(d / 'credentials.json', load(d / 'oauthAccount.json'))}")
+    print(f"Saved '{name}': {describe(load(d / 'oauthAccount.json'))}")
 
 
 def sync():
@@ -153,7 +150,7 @@ def sync():
         owner = name_for(oauth.get("emailAddress"))
         save(owner)
         atomic_write(CUR, owner + "\n")
-        return print(f"Added '{owner}': {describe(LIVE, oauth)}")
+        return print(f"Added '{owner}': {describe(oauth)}")
     if current() != owner:
         atomic_write(CUR, owner + "\n")
         print(f"Live login is '{owner}'; marked it active.")
@@ -163,14 +160,14 @@ def sync():
 
 
 def status():
-    print(f"Active: {current() or '(not tracked)'}  ->  {describe(LIVE, load(CFG, {}).get('oauthAccount'))}")
+    print(f"Active: {current() or '(not tracked)'}  ->  {describe(load(CFG, {}).get('oauthAccount'))}")
 
 
 def lst():
     cur = current()
     for a in accounts():
         d = ACC / a
-        print(f"{'*' if a == cur else ' '} {a:10} {describe(d / 'credentials.json', load(d / 'oauthAccount.json'))}")
+        print(f"{'*' if a == cur else ' '} {a:10} {describe(load(d / 'oauthAccount.json'))}")
 
 
 if __name__ == "__main__":
