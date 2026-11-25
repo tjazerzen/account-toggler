@@ -52,6 +52,7 @@ class FakeVM:
         self.tiers = {"main": "default_claude_max_20x", "backup": "default_claude_max_5x"}
         self.live_tier = self.tiers[active]
         self.calls = []
+        self.cc = None  # Claude Code's cached reading: (name, fetched_at, windows)
 
     def list_accounts(self):
         return {"error": None, "accounts": [
@@ -73,14 +74,18 @@ class FakeVM:
         return "tok-" + name, self.tiers[name]
 
     def fetch_usage(self, token):
+        self.calls.append(("fetch", token))
         return self.usage[token.split("-", 1)[1]]
+
+    def claude_code_reading(self, names):
+        return self.cc
 
 
 class FakeVMMixin:
     def setUp(self):
         self.vm = FakeVM()
         self.patches = [mock.patch.object(server, n, getattr(self.vm, n))
-                        for n in ("list_accounts", "run", "read_oauth", "fetch_usage")]
+                        for n in ("list_accounts", "run", "read_oauth", "fetch_usage", "claude_code_reading")]
         for p in self.patches:
             p.start()
         server.AUTO = self.auto = server.AutoSwitcher()
@@ -162,6 +167,57 @@ class AutoSwitchTests(FakeVMMixin, unittest.TestCase):
             self.auto.tick(force=True)
         self.assertEqual(self.auto.usage["main"]["windows"]["five_hour"]["u"], 50.0)
         self.assertIn("429", self.auto.usage["main"]["error"])
+
+    def fetches(self):
+        return [c[1] for c in self.vm.calls if c[0] == "fetch"]
+
+    def test_rate_limited_check_backs_off(self):
+        with mock.patch.object(server, "fetch_usage", side_effect=server.RateLimited("rate-limited")):
+            self.auto.tick(force=True)
+        u = self.auto.usage["main"]
+        self.assertEqual(u["backoff"], 2 * server.POLL)
+        self.assertIn("retrying in", u["error"])
+        u["checked_at"] -= server.POLL  # a normal tick later: still inside the back-off, so no request
+        self.auto.tick()
+        self.assertNotIn("tok-main", self.fetches())
+        u["retry_at"] = time.time() - 1
+        self.auto.tick()
+        self.assertIn("tok-main", self.fetches())
+        self.assertIsNone(self.auto.usage["main"]["backoff"])
+
+    def test_claude_code_reading_drives_switch_when_endpoint_is_rate_limited(self):
+        self.vm.cc = ("main", time.time(), {"seven_day": {"u": 93.0, "resets_at": iso(86400)}})
+        with mock.patch.object(server, "fetch_usage", side_effect=server.RateLimited("rate-limited")):
+            self.auto.tick()
+        self.assertEqual(self.uses(), ["backup"])
+        self.assertIsNone(self.auto.usage["main"]["error"])
+
+    def test_older_claude_code_reading_does_not_replace_newer_one(self):
+        self.vm.usage["main"] = {"seven_day": {"u": 20.0, "resets_at": iso(86400)}}
+        self.auto.tick(force=True)
+        self.vm.cc = ("main", time.time() - 600, {"seven_day": {"u": 95.0, "resets_at": iso(86400)}})
+        self.auto.tick(force=True)
+        self.assertEqual(self.auto.usage["main"]["windows"]["seven_day"]["u"], 20.0)
+        self.assertEqual(self.uses(), [])
+
+
+class ClaudeCodeReadingTests(unittest.TestCase):
+    def test_matches_profile_by_account_uuid(self):
+        d = Path(tempfile.mkdtemp())
+        for name, uuid in (("main", "uuid-a"), ("backup", "uuid-b")):
+            (d / name).mkdir()
+            (d / name / "oauthAccount.json").write_text(json.dumps({"accountUuid": uuid}))
+        cfg = d / "claude.json"
+        cfg.write_text(json.dumps({"cachedUsageUtilization": {
+            "accountUuid": "uuid-b", "fetchedAtMs": 1_700_000_000_000,
+            "utilization": {"five_hour": None, "seven_day": {"utilization": 41, "resets_at": "x"}}}}))
+        with mock.patch.multiple(server, ACC_DIR=d, CLAUDE_CFG=cfg):
+            self.assertEqual(server.claude_code_reading(["main", "backup"]),
+                             ("backup", 1_700_000_000, {"seven_day": {"u": 41.0, "resets_at": "x"}}))
+            cfg.write_text(json.dumps({"cachedUsageUtilization": {"accountUuid": "uuid-z", "fetchedAtMs": 1}}))
+            self.assertIsNone(server.claude_code_reading(["main", "backup"]))
+            cfg.write_text("not json")
+            self.assertIsNone(server.claude_code_reading(["main", "backup"]))
 
 
 class AuthUnitTests(unittest.TestCase):

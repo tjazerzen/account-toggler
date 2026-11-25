@@ -88,6 +88,10 @@ account's 5-hour and weekly limits are. When the active account reaches
 preferred in `PRIORITY` order, so it moves back to the first one once that one's
 limit resets. If every account is over the threshold, it stays where it is.
 
+- Anthropic allows only a few usage checks per window, and Claude Code spends some
+  of them too. So the server also uses Claude Code's own latest reading (from
+  `~/.claude.json`, matched to the account by its ID), and when a check gets HTTP 429
+  it waits 2, 4, 8, then at most 10 minutes before asking again.
 - It reads tokens (the live file for the active account, saved profiles for the
   others) and never refreshes or writes credentials. Inactive tokens expire after a
   few hours; after that it uses the last reading and its reset time.

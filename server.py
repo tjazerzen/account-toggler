@@ -77,6 +77,7 @@ PRIORITY = [s.strip() for s in os.environ.get("PRIORITY", "").split(",") if s.st
 THRESHOLD = float(os.environ.get("THRESHOLD", "90"))
 POLL = int(os.environ.get("POLL_SECONDS", "60"))
 INACTIVE_POLL = int(os.environ.get("INACTIVE_POLL_SECONDS", "300"))
+MAX_BACKOFF = 600  # longest pause after Anthropic rate-limits the usage check (HTTP 429)
 COOLDOWN = int(os.environ.get("COOLDOWN_SECONDS", "180"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", HOME / ".local/state/claude-account-ui/state.json"))
 SESSIONS_FILE = Path(os.environ.get("SESSIONS_FILE", STATE_FILE.parent / "sessions.json"))
@@ -110,6 +111,7 @@ PLACEHOLDERS = {"", "change-me", "changeme"}
 
 ACC_DIR = HOME / ".claude-accounts"
 LIVE = HOME / ".claude" / ".credentials.json"
+CLAUDE_CFG = HOME / ".claude.json"  # Claude Code caches its own usage reading here
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 WINDOWS = {"five_hour": "5-hour", "seven_day": "Weekly",
            "seven_day_opus": "Weekly (Opus)", "seven_day_sonnet": "Weekly (Sonnet)"}
@@ -378,6 +380,19 @@ def read_oauth(path):
     return (token if valid else None), o.get("rateLimitTier")
 
 
+class RateLimited(RuntimeError):
+    pass
+
+
+def parse_windows(data):
+    windows = {}
+    for key in WINDOWS:
+        w = data.get(key)
+        if isinstance(w, dict) and w.get("utilization") is not None:
+            windows[key] = {"u": float(w["utilization"]), "resets_at": w.get("resets_at")}
+    return windows
+
+
 def fetch_usage(token):
     req = urllib.request.Request(USAGE_URL, headers={
         "Authorization": "Bearer " + token,
@@ -388,15 +403,30 @@ def fetch_usage(token):
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.load(r)
     except urllib.error.HTTPError as e:
+        if e.code == 429:
+            raise RateLimited("Anthropic rate-limited the usage check") from None
         raise RuntimeError(f"usage check failed (HTTP {e.code})") from None
     except (urllib.error.URLError, TimeoutError, ValueError) as e:
         raise RuntimeError(f"usage check failed ({type(e).__name__})") from None
-    windows = {}
-    for key in WINDOWS:
-        w = data.get(key)
-        if isinstance(w, dict) and w.get("utilization") is not None:
-            windows[key] = {"u": float(w["utilization"]), "resets_at": w.get("resets_at")}
-    return windows
+    return parse_windows(data)
+
+
+def claude_code_reading(names):
+    """Claude Code's own last usage reading, from ~/.claude.json: (account name, fetched_at, windows).
+    Matched to a profile by account UUID, so it is never attributed to the wrong account."""
+    try:
+        c = json.loads(CLAUDE_CFG.read_text()).get("cachedUsageUtilization") or {}
+        uuid, fetched_at = c.get("accountUuid"), float(c["fetchedAtMs"]) / 1000
+        windows = parse_windows(c.get("utilization") or {})
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    for n in names:
+        try:
+            if uuid and json.loads((ACC_DIR / n / "oauthAccount.json").read_text()).get("accountUuid") == uuid:
+                return n, fetched_at, windows
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
 
 
 def parse_ts(iso):
@@ -478,9 +508,16 @@ class AutoSwitcher:
 
     def refresh_usage(self, names, active, force):
         now = time.time()
+        # Claude Code polls the same endpoint and caches the result. Using it costs no request.
+        cc = claude_code_reading(names)
+        if cc and cc[1] > (self.usage.get(cc[0], {}).get("fetched_at") or 0):
+            self.usage.setdefault(cc[0], {}).update(windows=cc[2], fetched_at=cc[1], error=None)
         for n in names:
             u = self.usage.setdefault(n, {})
-            if n != active and not force and now - (u.get("checked_at") or 0) < INACTIVE_POLL:
+            due = POLL if n == active else INACTIVE_POLL
+            if not force and (now - (u.get("checked_at") or 0) < due - 5
+                              or now - (u.get("fetched_at") or 0) < due - 5
+                              or now < (u.get("retry_at") or 0)):
                 continue
             u["checked_at"] = now
             token, _ = read_oauth(LIVE if n == active else ACC_DIR / n / "credentials.json")
@@ -488,7 +525,12 @@ class AutoSwitcher:
                 u["error"] = "token expired; showing last known usage (resets are still honoured)"
                 continue
             try:
-                u.update(windows=fetch_usage(token), fetched_at=now, error=None)
+                u.update(windows=fetch_usage(token), fetched_at=now, error=None, backoff=None, retry_at=None)
+            except RateLimited as e:
+                # The endpoint allows only a few calls per window, shared with Claude Code itself.
+                u["backoff"] = min((u.get("backoff") or POLL) * 2, MAX_BACKOFF)
+                u["retry_at"] = now + u["backoff"]
+                u["error"] = f"{e}; retrying in {u['backoff'] // 60 or 1} min"
             except RuntimeError as e:
                 u["error"] = str(e)
 
