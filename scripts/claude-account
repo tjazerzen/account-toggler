@@ -14,7 +14,7 @@ Saved logins live in ~/.claude-accounts/<name>/; the live one is ~/.claude/.cred
 plus `oauthAccount` in ~/.claude.json. Accounts are matched by their account UUID.
 After switching, start a NEW thread in T3 Code (running threads keep their old login).
 """
-import hashlib, json, os, re, shutil, subprocess, sys, tempfile
+import json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 HOME = Path.home()
@@ -22,7 +22,7 @@ ACC = Path(os.environ.get("CLAUDE_ACCOUNTS_DIR") or HOME / ".claude-accounts")
 LIVE = Path(os.environ.get("CLAUDE_CREDENTIALS") or HOME / ".claude" / ".credentials.json")
 CFG = Path(os.environ.get("CLAUDE_JSON") or HOME / ".claude.json")
 CUR = ACC / "current"
-SEEN = ACC / ".sync-seen"  # hash of the live login seen by the previous sync (no secrets)
+SEEN = ACC / ".sync-seen"  # account id + file time/size seen by the previous sync (no secrets)
 CLAUDE = shutil.which("claude") or str(HOME / ".local/bin/claude")
 
 
@@ -50,9 +50,15 @@ def accounts():
     return sorted(p.name for p in ACC.iterdir() if p.is_dir() and (p / "credentials.json").exists()) if ACC.exists() else []
 
 
-def describe(creds, oauth):
-    o = (creds or {}).get("claudeAiOauth", {})
-    return f"{(oauth or {}).get('emailAddress','?')}  [{o.get('subscriptionType','?')} / {o.get('rateLimitTier','?')}]"
+def plan(login_file):
+    """Only the plan fields of a login file (never its tokens)."""
+    o = (load(login_file, {}) or {}).get("claudeAiOauth") or {}
+    return str(o.get("subscriptionType") or "?"), str(o.get("rateLimitTier") or "?")
+
+
+def describe(login_file, profile):
+    kind, tier = plan(login_file)
+    return f"{(profile or {}).get('emailAddress', '?')}  [{kind} / {tier}]"
 
 
 def owner_of(uuid):
@@ -119,21 +125,25 @@ def login(name):
         sys.exit("Login did not finish; nothing saved.")
     atomic_write(d / "credentials.json", creds.read_text())
     atomic_write(d / "oauthAccount.json", json.dumps(load(cfgdir / ".claude.json", {}).get("oauthAccount", {}), indent=2))
-    print(f"Saved '{name}': {describe(load(d/'credentials.json'), load(d/'oauthAccount.json'))}")
+    print(f"Saved '{name}': {describe(d / 'credentials.json', load(d / 'oauthAccount.json'))}")
 
 
 def sync():
     """Run regularly (the web UI does, every minute). Acts only when it has seen the same live
     login twice in a row, so it never pairs credentials and account info mid-login."""
     try:
+        before_read = LIVE.stat()
         creds = LIVE.read_text()
+        st = LIVE.stat()
     except OSError:
         return print("No live Claude login.")
+    if (before_read.st_mtime_ns, before_read.st_size) != (st.st_mtime_ns, st.st_size):
+        return print("Live login changed while reading it; trying again next time.")
     oauth = (load(CFG, {}) or {}).get("oauthAccount") or {}
     uuid = oauth.get("accountUuid")
     if not uuid or not (load(LIVE, {}) or {}).get("claudeAiOauth"):
         return print("No live Claude login.")
-    seen = hashlib.sha256(f"{uuid}\n{creds}".encode()).hexdigest()
+    seen = f"{uuid} {st.st_mtime_ns} {st.st_size}"  # changes whenever the login file is rewritten
     before = SEEN.read_text().strip() if SEEN.exists() else None
     atomic_write(SEEN, seen + "\n")
     if before != seen:
@@ -143,7 +153,7 @@ def sync():
         owner = name_for(oauth.get("emailAddress"))
         save(owner)
         atomic_write(CUR, owner + "\n")
-        return print(f"Added '{owner}': {describe(load(LIVE), oauth)}")
+        return print(f"Added '{owner}': {describe(LIVE, oauth)}")
     if current() != owner:
         atomic_write(CUR, owner + "\n")
         print(f"Live login is '{owner}'; marked it active.")
@@ -153,14 +163,14 @@ def sync():
 
 
 def status():
-    print(f"Active: {current() or '(not tracked)'}  ->  {describe(load(LIVE), load(CFG, {}).get('oauthAccount'))}")
+    print(f"Active: {current() or '(not tracked)'}  ->  {describe(LIVE, load(CFG, {}).get('oauthAccount'))}")
 
 
 def lst():
     cur = current()
     for a in accounts():
         d = ACC / a
-        print(f"{'*' if a == cur else ' '} {a:10} {describe(load(d/'credentials.json'), load(d/'oauthAccount.json'))}")
+        print(f"{'*' if a == cur else ' '} {a:10} {describe(d / 'credentials.json', load(d / 'oauthAccount.json'))}")
 
 
 if __name__ == "__main__":
