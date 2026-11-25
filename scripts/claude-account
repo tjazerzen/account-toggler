@@ -150,7 +150,7 @@ def sync():
         owner = name_for(oauth.get("emailAddress"))
         save(owner)
         atomic_write(CUR, owner + "\n")
-        return print(f"Added '{owner}': {describe(oauth)}")
+        return print(f"Added '{owner}': {describe(load(ACC / owner / 'oauthAccount.json'))}")
     if current() != owner:
         atomic_write(CUR, owner + "\n")
         print(f"Live login is '{owner}'; marked it active.")
