@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Switch which ChatGPT account Codex (and T3 Code's Codex threads) uses on this machine.
+
+  codex-account                 show the active account
+  codex-account list [--json]   list saved accounts (* = the one Codex is signed in with)
+  codex-account use <name>      switch to a saved account
+  codex-account toggle          switch to the other account (when exactly two are saved)
+  codex-account save <name>     save the login Codex is using now under <name>
+  codex-account login <name>    sign in a new account (device code) in isolation and save it
+
+Saved logins live in ~/.codex-accounts/<name>/auth.json; Codex's live login is
+$CODEX_HOME/auth.json (~/.codex/auth.json). The active account is whichever saved one
+has the same ChatGPT account id as the live login, so nothing can drift out of step.
+Codex renews its tokens in the live file (the refresh token changes each time), so a
+switch first copies the live login back into its own slot, then puts the new one live.
+Tokens are never printed.
+"""
+import base64, fcntl, json, os, shutil, subprocess, sys, tempfile, time
+from pathlib import Path
+
+HOME = Path.home()
+ACC = Path(os.environ.get("CODEX_ACCOUNTS_DIR") or HOME / ".codex-accounts")
+CODEX_HOME = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+LIVE = CODEX_HOME / "auth.json"
+LOCKFILE = CODEX_HOME / "auth.json.lock"
+CODEX = shutil.which("codex") or str(HOME / ".local/bin/codex")
+
+
+def atomic_write(path, data):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent)
+    with os.fdopen(fd, "w") as f:
+        f.write(data)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def claims(jwt):
+    try:
+        p = jwt.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+    except (AttributeError, IndexError, ValueError):
+        return {}
+
+
+def ident(path):
+    """(account id, email, plan) of a Codex auth.json, or None."""
+    try:
+        t = json.loads(Path(path).read_text()).get("tokens") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    c = claims(t.get("id_token"))
+    auth = c.get("https://api.openai.com/auth") or {}
+    acct = t.get("account_id") or auth.get("chatgpt_account_id")
+    return (acct, c.get("email") or "?", auth.get("chatgpt_plan_type") or "?") if acct else None
+
+
+def accounts():
+    return sorted(p.name for p in ACC.iterdir() if (p / "auth.json").is_file()) if ACC.is_dir() else []
+
+
+def owner_of(identity):
+    """Saved account that `identity` belongs to (same ChatGPT account id)."""
+    if not identity:
+        return None
+    return next((a for a in accounts() if (ident(ACC / a / "auth.json") or (None,))[0] == identity[0]), None)
+
+
+def current():
+    return owner_of(ident(LIVE))
+
+
+class codex_lock:
+    """Hold Codex's auth lock while touching the live file, so a token refresh in a
+    running Codex can't interleave with a switch. Gives up waiting after 15 s."""
+
+    def __enter__(self):
+        CODEX_HOME.mkdir(parents=True, exist_ok=True)
+        self.f = open(LOCKFILE, "a+")
+        deadline = time.time() + 15
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.time() > deadline:
+                    self.f.close()
+                    sys.exit("Codex is holding its login lock (renewing a token?); try again in a moment.")
+                time.sleep(0.2)
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.f, fcntl.LOCK_UN)
+        self.f.close()
+
+
+def save(name, quiet=False):
+    live = ident(LIVE)
+    if not live:
+        sys.exit("Codex isn't signed in with ChatGPT here; nothing to save.")
+    other = owner_of(live)
+    if other and other != name:
+        sys.exit(f"That login is already saved as '{other}'.")
+    atomic_write(ACC / name / "auth.json", LIVE.read_text())
+    os.chmod(ACC, 0o700)
+    if not quiet:
+        print(f"Saved '{name}': {live[1]} [{live[2]}]")
+
+
+def use(name):
+    if name not in accounts():
+        sys.exit(f"No saved account '{name}'. Saved: {', '.join(accounts()) or 'none'}")
+    with codex_lock():
+        live = ident(LIVE)
+        cur = owner_of(live)
+        if cur == name:
+            print(f"Already on '{name}'.")
+            return status()
+        if live and not cur:
+            sys.exit(f"Codex is signed in as {live[1]}, which isn't saved; switching would lose that login. "
+                     "Save it first: codex-account save <name>")
+        if cur:
+            # Keep the newest tokens of the account we leave (Codex may have renewed them).
+            atomic_write(ACC / cur / "auth.json", LIVE.read_text())
+        atomic_write(LIVE, (ACC / name / "auth.json").read_text())
+    print(f"Switched Codex to '{name}'. Start a new Codex thread in T3 Code to be sure it uses it.")
+    status()
+
+
+def toggle():
+    accs = accounts()
+    if len(accs) != 2:
+        sys.exit(f"toggle needs exactly two saved accounts, found: {', '.join(accs) or 'none'}")
+    use(accs[1] if current() == accs[0] else accs[0])
+
+
+def login(name):
+    if (ACC / name / "auth.json").exists():
+        sys.exit(f"'{name}' is already saved.")
+    ACC.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".login-", dir=ACC))
+    try:
+        subprocess.run([CODEX, "login", "--device-auth"], env=dict(os.environ, CODEX_HOME=str(tmp)))
+        got = ident(tmp / "auth.json")
+        if not got:
+            sys.exit("Login did not finish; nothing saved.")
+        if owner_of(got):
+            sys.exit(f"{got[1]} is already saved as '{owner_of(got)}'.")
+        atomic_write(ACC / name / "auth.json", (tmp / "auth.json").read_text())
+        print(f"Saved '{name}': {got[1]} [{got[2]}]")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def status():
+    live = ident(LIVE)
+    print(f"Active: {current() or '(not saved)'}  ->  " + (f"{live[1]}  [{live[2]}]" if live else "not signed in"))
+
+
+def lst(as_json=False):
+    cur = current()
+    rows = []
+    for a in accounts():
+        i = ident(ACC / a / "auth.json") or (None, "?", "?")
+        rows.append({"name": a, "email": i[1], "plan": i[2], "active": a == cur})
+    if as_json:
+        print(json.dumps(rows))
+        return
+    for r in rows:
+        print(f"{'*' if r['active'] else ' '} {r['name']:10} {r['email']}  [{r['plan']}]")
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    cmd = args[0] if args else "status"
+    if cmd == "status": status()
+    elif cmd == "list": lst("--json" in args[1:])
+    elif cmd == "toggle": toggle()
+    elif cmd in ("use", "save", "login") and len(args) == 2: {"use": use, "save": save, "login": login}[cmd](args[1])
+    elif cmd in ("use", "save", "login"): sys.exit(f"Usage: codex-account {cmd} <name>")
+    elif cmd in ("-h", "--help", "help"): print(__doc__)
+    else: sys.exit(__doc__)

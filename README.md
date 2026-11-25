@@ -6,8 +6,8 @@ also switch automatically when an account gets close to its usage limit.
 
 It sits on top of a `claude-account` CLI (`list`, `use <name>`) that keeps one
 saved login per account. The page lists the accounts, highlights the active one,
-shows 5-hour and weekly usage, and switches with one click. It also shows how much
-of its plan limits [Codex](#codex) has used (tracking only, no switching).
+shows 5-hour and weekly usage, and switches with one click. It also switches which
+ChatGPT account [Codex](#codex) uses, the same way (`scripts/codex-account`).
 
 <img src="docs/screenshot.png" alt="Account switcher: two accounts with usage bars, auto-switch on (personal details masked)" width="480">
 
@@ -79,7 +79,7 @@ hostnames within minutes.
 | DNS rebinding, host scanning | Unknown `Host` headers get 421. `robots.txt` and `X-Robots-Tag` keep it out of search engines. |
 | Slow-loris / floods | A request must arrive completely within 8 s. Each listener allows at most 64 connections (extra ones are dropped), and the local listener has its own pool. The unit sets `TasksMax`/`MemoryMax`, switch/check calls are throttled, and junk connections log one line, not a traceback. Put it behind Cloudflare for real DoS protection. |
 | Fingerprinting | No `Server` header, `/healthz` only answers locally, `robots.txt` disallows everything, and every response sends `X-Robots-Tag: noindex`. |
-| Token exposure | The server never prints or stores tokens. It reads Claude access tokens only to query Anthropic's usage endpoint, and Codex's access token only to query chatgpt.com's usage endpoint. It redacts anything token-shaped from CLI output. Secrets are removed from the environment before child processes start. |
+| Token exposure | The server never prints or stores tokens. It reads Claude access tokens only to query Anthropic's usage endpoint, and each Codex account's access token only to query chatgpt.com's usage endpoint. It redacts anything token-shaped from CLI output. Secrets are removed from the environment before child processes start. |
 
 ## Auto-switch
 
@@ -105,20 +105,41 @@ limit resets. If every account is over the threshold, it stays where it is.
 
 ## Codex
 
-The page also has a Codex card: the ChatGPT plan Codex is signed in with and how full
-its limits are (for example a 5-hour and a weekly window, or one 30-day window on Go).
-It only tracks. Codex has one login per machine, and nothing here switches it or
-counts it towards the Claude auto-switch.
+The page also switches which ChatGPT account Codex uses, with the same auto-switch
+rules as the Claude side, but with its own on/off switch. Codex keeps one login per
+machine (`~/.codex/auth.json`). `scripts/codex-account` keeps a saved copy per account and
+swaps the live one, the way `claude-account` does for Claude:
 
-- Codex writes its rate-limit reading into its session logs
-  (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`) after every model reply. The server
-  reads the newest one, which costs no request.
-- When Codex has been idle for `INACTIVE_POLL_SECONDS` (300), or on *Check usage now*,
-  it asks `chatgpt.com/backend-api/wham/usage` (what Codex's `/status` shows), with
-  the access token from `~/.codex/auth.json` (`CODEX_HOME` if set). It never
-  refreshes that token; Codex does. If the token has expired, the card keeps the last
-  reading and says so.
-- Nothing to set up: if Codex is signed in with ChatGPT on the machine, the card fills in.
+```sh
+ln -s "$PWD/scripts/codex-account" ~/.local/bin/codex-account
+codex-account save main              # the login Codex has now
+codex-account login backup           # sign in another ChatGPT account (device code), saved in isolation
+codex-account list                   # * marks the account Codex is signed in with
+codex-account use backup             # or: codex-account toggle
+```
+
+- The saved logins are kept in `~/.codex-accounts/<name>/auth.json` (mode 600). The
+  active account is the saved one whose ChatGPT account id matches the live login, so
+  this can't get out of step with Codex.
+- Codex renews its tokens in the live file, and each renewal replaces the refresh
+  token. So a switch first copies the live login back to its own slot, then makes the
+  new one live, all while holding Codex's `auth.json.lock`. If the live login isn't
+  saved under any name, the switch is refused, because it would lose that login.
+- After a switch, start a new Codex thread in T3 Code. Threads that are already
+  running can keep the old login.
+- Usage: Codex writes a rate-limit reading to its session logs
+  (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`) after every model reply, and each
+  log starts with the account id it was opened with. The server credits each reading
+  to that account, which costs no request. An account whose log hasn't changed for
+  `INACTIVE_POLL_SECONDS` (300) is checked at `chatgpt.com/backend-api/wham/usage`
+  (what Codex's `/status` reads) with that account's own access token: the live one
+  for the active account, the saved one for the others. It never renews a token. A
+  saved token stays valid for about 10 days after the account was last used. Once it
+  expires, the card keeps the last reading.
+- Auto-switch moves Codex to the next account in `CODEX_PRIORITY` (default: list
+  order) at `THRESHOLD`% of any window, and back once that window resets. It uses the
+  same `COOLDOWN_SECONDS`. Switching by hand to an account it wouldn't pick turns
+  Codex auto-switch off.
 
 ## Keeping secrets out of this public repo
 
@@ -166,7 +187,7 @@ counts it towards the Claude auto-switch.
   repo's GitHub issues, PRs, comments or Dependabot PR bodies. Anyone can write text
   there that tries to make the agent leak credentials. Review outside changes by hand.
 
-Tests: `python3 -m unittest -v test_server test_check_secrets`.
+Tests: `python3 -m unittest -v test_server test_check_secrets test_codex_account`.
 
 ## API
 

@@ -54,17 +54,24 @@ class FakeVM:
         self.live_tier = self.tiers[active]
         self.calls = []
         self.cc = None  # Claude Code's cached reading: (name, fetched_at, windows)
-        self.codex_token = ("codex-tok", "acct-1")
-        self.codex_usage = {"windows": {"primary": {"u": 23.0, "resets_at": iso(86400), "label": "Monthly"}},
-                            "plan": "go", "email": "someone@example.com", "limit_reached": False}
-        self.codex_log = None  # Codex's session-log reading: (when, usage)
+        self.codex_active = "main"
+        self.codex_ids = {"main": "acct-1", "spare": "acct-2"}
+        self.codex_expired = set()  # Codex accounts whose token has expired
+        self.codex_usage = {n: {"windows": {"primary": {"u": 23.0, "resets_at": iso(86400), "label": "5-hour"}},
+                                "plan": "plus", "email": f"{n}@example.com", "limit_reached": False}
+                            for n in ("main", "spare")}
+        self.codex_log = None  # Codex's latest session-log reading: (when, usage)
 
     def list_accounts(self):
         return {"error": None, "accounts": [
             {"name": n, "email": f"{n}@example.com", "plan": "max", "label": "Max", "active": n == self.active}
             for n in ("main", "backup")]}
 
-    def run(self, *args):
+    def run(self, *args, cli=None):
+        if cli == server.CODEX_CLI:
+            self.calls.append(("codex-use", args[1]))
+            self.codex_active = args[1]
+            return 0, f"Switched Codex to '{args[1]}'.", ""
         self.calls.append(args)
         if args[0] == "use":
             self.active = args[1]
@@ -85,12 +92,21 @@ class FakeVM:
     def claude_code_reading(self, names):
         return self.cc
 
-    def read_codex_auth(self):
-        return self.codex_token
+    def list_codex_accounts(self):
+        return {"error": None, "accounts": [
+            {"name": n, "email": f"{n}@example.com", "plan": "plus", "label": "Plus", "active": n == self.codex_active}
+            for n in ("main", "spare")]}
+
+    def read_codex_auth(self, path=None):
+        path = Path(path)
+        name = self.codex_active if path == server.CODEX_HOME / "auth.json" else path.parent.name
+        return (None if name in self.codex_expired else "ctok-" + name), self.codex_ids[name]
 
     def fetch_codex_usage(self, token, account):
-        self.calls.append(("codex", token, account))
-        return dict(self.codex_usage)
+        name = token.split("-", 1)[1]
+        assert self.codex_ids[name] == account
+        self.calls.append(("codex", name))
+        return json.loads(json.dumps(self.codex_usage[name]))
 
     def codex_session_reading(self):
         return self.codex_log
@@ -101,12 +117,15 @@ class FakeVMMixin:
         self.vm = FakeVM()
         self.patches = [mock.patch.object(server, n, getattr(self.vm, n))
                         for n in ("list_accounts", "run", "read_oauth", "fetch_usage", "claude_code_reading",
-                                  "read_codex_auth", "fetch_codex_usage", "codex_session_reading")]
+                                  "list_codex_accounts", "read_codex_auth", "fetch_codex_usage",
+                                  "codex_session_reading")]
         for p in self.patches:
             p.start()
         server.AUTO = self.auto = server.AutoSwitcher()
-        self.auto.enabled, self.auto.usage, self.auto.events, self.auto.codex = True, {}, [], {}
+        self.auto.enabled, self.auto.usage, self.auto.events = True, {}, []
         self.auto.last_switch_at, self.auto.last_active = 0, None
+        self.auto.codex_enabled, self.auto.codex_usage = True, {}
+        self.auto.codex_last_switch_at, self.auto.codex_last_active, self.auto.codex_active_since = 0, None, 0
 
     def tearDown(self):
         for p in self.patches:
@@ -236,58 +255,123 @@ class ClaudeCodeReadingTests(unittest.TestCase):
             self.assertIsNone(server.claude_code_reading(["main", "backup"]))
 
 
-class CodexTrackingTests(FakeVMMixin, unittest.TestCase):
+class CodexTests(FakeVMMixin, unittest.TestCase):
     def codex_calls(self):
-        return [c for c in self.vm.calls if c[0] == "codex"]
+        return [c[1] for c in self.vm.calls if c[0] == "codex"]
 
-    def test_asks_endpoint_and_shows_usage(self):
-        self.auto.tick()
-        self.assertEqual(self.codex_calls(), [("codex", "codex-tok", "acct-1")])
-        c = self.auto.decorate(server.list_accounts())["codex"]
-        self.assertEqual((c["label"], c["email"], c["source"], c["error"]), ("Go", "someone@example.com", "ChatGPT", None))
-        self.assertEqual([(w["label"], w["u"], w["reset"]) for w in c["windows"]], [("Monthly", 23.0, False)])
+    def codex_uses(self):
+        return [c[1] for c in self.vm.calls if c[0] == "codex-use"]
 
-    def test_fresh_session_log_saves_the_request(self):
-        self.vm.codex_log = (time.time() - 5, {"windows": {"primary": {"u": 41.0, "resets_at": iso(3600),
-                                                                       "label": "5-hour"}}, "plan": "plus"})
+    def view(self):
+        return {a["name"]: a for a in self.auto.decorate(server.list_accounts())["codex"]["accounts"]}
+
+    def test_asks_endpoint_for_every_account_with_its_own_token(self):
         self.auto.tick()
-        self.assertEqual(self.codex_calls(), [])
-        self.assertEqual(self.auto.codex["windows"]["primary"]["u"], 41.0)
-        self.assertEqual(self.auto.codex["source"], "Codex's session log")
-        self.auto.tick(force=True)  # "Check usage now" still asks
-        self.assertEqual(len(self.codex_calls()), 1)
+        self.assertEqual(sorted(self.codex_calls()), ["main", "spare"])
+        v = self.view()
+        self.assertTrue(v["main"]["active"])
+        self.assertEqual([(w["label"], w["u"]) for w in v["spare"]["usage"]["windows"]], [("5-hour", 23.0)])
+        self.assertEqual(v["main"]["usage"]["source"], "ChatGPT")
+
+    def log(self, u, ago):
+        self.vm.codex_log = (time.time() - ago, {"windows": {"primary": {
+            "u": u, "resets_at": iso(3600), "label": "5-hour"}}, "plan": "plus"})
+
+    def test_session_log_is_credited_to_the_active_account_only_after_it_went_live(self):
+        self.auto.tick(force=True)
+        self.vm.codex_active = "spare"
+        self.log(41.0, 0)  # written right at the switch: could still be main's
+        self.auto.tick(force=True)
+        self.assertEqual(self.auto.codex_usage["main"]["windows"]["primary"]["u"], 23.0)
+        self.assertEqual(self.auto.codex_usage["spare"]["source"], "ChatGPT")
+        self.vm.codex_log = (time.time() + 30, self.vm.codex_log[1])  # a reply after the switch
+        n = len(self.codex_calls())
+        self.auto.tick()
+        self.assertEqual(self.auto.codex_usage["spare"]["windows"]["primary"]["u"], 41.0)
+        self.assertEqual(self.auto.codex_usage["spare"]["source"], "Codex's session log")
+        self.assertEqual(self.auto.codex_usage["main"]["windows"]["primary"]["u"], 23.0)
+        self.assertEqual(len(self.codex_calls()), n)
 
     def test_older_session_log_does_not_replace_newer_reading(self):
         self.auto.tick(force=True)
-        self.vm.codex_log = (time.time() - 3600, {"windows": {}, "plan": "go"})
+        self.log(80.0, 3600)
         self.auto.tick()
-        self.assertEqual(self.auto.codex["windows"]["primary"]["u"], 23.0)
+        self.assertEqual(self.auto.codex_usage["main"]["windows"]["primary"]["u"], 23.0)
 
     def test_expired_token_keeps_last_reading(self):
         self.auto.tick(force=True)
-        self.vm.codex_token = (None, "acct-1")
+        self.vm.codex_expired = {"main", "spare"}
         self.auto.tick(force=True)
-        self.assertEqual(len(self.codex_calls()), 1)
-        self.assertEqual(self.auto.codex["windows"]["primary"]["u"], 23.0)
-        self.assertIn("expired", self.auto.codex["error"])
-        self.vm.codex_token = (None, None)
-        self.auto.tick(force=True)
-        self.assertIn("isn't signed in", self.auto.codex["error"])
+        self.assertEqual(len(self.codex_calls()), 2)
+        self.assertEqual(self.auto.codex_usage["main"]["windows"]["primary"]["u"], 23.0)
+        self.assertIn("Codex renews it", self.auto.codex_usage["main"]["error"])
+        self.assertIn("saved login token expired", self.auto.codex_usage["spare"]["error"])
 
     def test_rate_limited_codex_check_backs_off(self):
         with mock.patch.object(server, "fetch_codex_usage", side_effect=server.RateLimited("rate-limited")):
             self.auto.tick(force=True)
-        self.assertIn("retrying in", self.auto.codex["error"])
-        self.auto.codex["checked_at"] -= server.INACTIVE_POLL
+        self.assertIn("retrying in", self.auto.codex_usage["main"]["error"])
+        for c in self.auto.codex_usage.values():
+            c["checked_at"] -= server.INACTIVE_POLL
         self.auto.tick()
         self.assertEqual(self.codex_calls(), [])
 
-    def test_codex_never_switches_or_blocks_claude(self):
-        self.vm.codex_usage["windows"]["primary"]["u"] = 100.0
-        self.vm.codex_usage["limit_reached"] = True
+    def test_switches_codex_at_threshold_and_back_after_reset(self):
+        self.vm.codex_usage["main"]["windows"]["primary"]["u"] = 92.0
+        self.auto.tick()
+        self.assertEqual(self.codex_uses(), ["spare"])
+        self.assertEqual(self.uses(), [])  # Claude is untouched
+        self.assertEqual(self.auto.events[-1]["kind"], "switch")
+        self.vm.codex_usage["main"]["windows"]["primary"] = {"u": 1.0, "resets_at": iso(5 * 3600), "label": "5-hour"}
+        self.auto.tick(force=True)  # cooldown still running
+        self.assertEqual(self.codex_uses(), ["spare"])
+        self.auto.codex_last_switch_at -= server.COOLDOWN + 1
+        self.auto.tick(force=True)
+        self.assertEqual(self.codex_uses(), ["spare", "main"])
+
+    def test_never_switches_to_an_account_without_a_reading(self):
+        self.vm.codex_active = "spare"  # spare is not preferred, main has no reading yet
+        self.auto.codex_active_since = time.time() - 60
+        self.vm.codex_log = (time.time() + 5, {"windows": {}, "plan": "plus"})  # empty: not fresh
+        with mock.patch.object(server, "fetch_codex_usage", side_effect=RuntimeError("down")):
+            self.auto.tick()
+        self.assertEqual(self.codex_uses(), [])
+        self.vm.codex_usage["main"]["windows"]["primary"]["u"] = 100.0
+        self.auto.tick(force=True)  # the endpoint now says main is full: stay
+        self.assertEqual(self.codex_uses(), [])
+        self.assertTrue(self.auto.codex_enabled)
+
+    def test_both_codex_accounts_full_stays_put(self):
+        for n in ("main", "spare"):
+            self.vm.codex_usage[n]["windows"]["primary"]["u"] = 99.0
+        self.auto.tick()
+        self.assertEqual(self.codex_uses(), [])
+
+    def test_codex_auto_off_never_switches(self):
+        self.auto.codex_enabled = False
+        self.vm.codex_usage["main"]["windows"]["primary"]["u"] = 99.0
+        self.auto.tick()
+        self.assertEqual(self.codex_uses(), [])
+        self.assertTrue(self.view()["main"]["blocked"])
+
+    def test_outside_switch_to_non_preferred_pauses_codex_auto(self):
+        self.auto.tick()
+        self.vm.codex_active = "spare"
+        self.auto.tick()
+        self.assertFalse(self.auto.codex_enabled)
+        self.assertTrue(self.auto.enabled)  # Claude's auto-switch is separate
+        self.assertEqual(self.codex_uses(), [])
+
+    def test_codex_limits_never_switch_claude(self):
+        self.vm.codex_usage["main"]["windows"]["primary"]["u"] = 100.0
+        self.vm.codex_usage["spare"]["windows"]["primary"]["u"] = 100.0
         self.auto.tick()
         self.assertEqual(self.uses(), [])
-        self.assertTrue(self.auto.decorate(server.list_accounts())["codex"]["limit_reached"])
+
+    def test_unsaved_live_login_is_reported(self):
+        self.vm.codex_active = None
+        st = self.auto.decorate(server.list_accounts())["codex"]
+        self.assertIn("codex-account save", st["error"])
 
 
 class CodexReadingTests(unittest.TestCase):
@@ -493,10 +577,33 @@ class HttpTests(HttpBase):
         r, _ = self.req("GET", "/api/accounts")
         self.assertEqual(r.status, 401)
         for path, payload in (("/api/use", {"name": "backup"}), ("/api/auto", {"enabled": False}),
-                              ("/api/check", {}), ("/api/logout-all", {})):
+                              ("/api/check", {}), ("/api/logout-all", {}),
+                              ("/api/codex/use", {"name": "spare"}), ("/api/codex/auto", {"enabled": False})):
             r, _ = self.req("POST", path, payload)
             self.assertEqual(r.status, 401, path)
         self.assertEqual(self.uses(), [])
+        self.assertEqual([c for c in self.vm.calls if c[0] == "codex-use"], [])
+
+    def test_codex_switch_and_auto_toggle(self):
+        cookie = self.cookie_from(self.login()[0])
+        self.auto.tick()  # read both accounts' usage first
+        r, body = self.req("POST", "/api/codex/use", {"name": "spare"}, headers={"Cookie": cookie})
+        self.assertEqual(r.status, 200)
+        d = json.loads(body)
+        self.assertEqual([a["name"] for a in d["codex"]["accounts"] if a["active"]], ["spare"])
+        self.assertEqual(self.vm.active, "main")  # Claude untouched
+        self.assertFalse(self.auto.codex_enabled)  # moved off the preferred account by hand
+        server.ACTION_GATE["t"] = 0.0
+        r, body = self.req("POST", "/api/codex/use", {"name": "nope"}, headers={"Cookie": cookie})
+        self.assertEqual(r.status, 400)
+        server.ACTION_GATE["t"] = 0.0
+        r, body = self.req("POST", "/api/codex/use", {"name": "../x"}, headers={"Cookie": cookie})
+        self.assertEqual(r.status, 400)
+        server.ACTION_GATE["t"] = 0.0
+        r, body = self.req("POST", "/api/codex/auto", {"enabled": True}, headers={"Cookie": cookie})
+        self.assertEqual(r.status, 200)
+        self.assertTrue(json.loads(body)["codex"]["auto"]["enabled"])
+        self.assertTrue(self.auto.enabled)
 
     def test_login_flow(self):
         r, _ = self.login("wrong-password")

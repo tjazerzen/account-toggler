@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Tiny web UI + auto-switcher for which Claude subscription Claude Code uses,
-plus a read-only view of how much of its plan limits Codex (ChatGPT login) has used.
+"""Tiny web UI + auto-switcher for which Claude subscription Claude Code uses, and
+which ChatGPT account Codex uses.
 
-Switching always goes through `claude-account use <name>`; this server never writes
-credential files. For auto-switching it *reads* each account's current OAuth access
+Switching always goes through `claude-account use <name>` / `codex-account use <name>`;
+this server never writes credential files. For auto-switching it *reads* each account's current OAuth access
 token (live file for the active account, saved profile for the others) only to ask
 Anthropic's usage endpoint how much of the 5-hour / weekly limits are used. Tokens
 stay in memory: they are never logged, stored, or sent anywhere but api.anthropic.com.
 It never refreshes tokens itself (Claude Code does that), so it can't break a login.
-Codex is tracked the same way: its own session logs first (no request), and its live
-access token from ~/.codex/auth.json only for chatgpt.com's usage endpoint.
+Codex is tracked the same way: its own session logs first (no request), then each
+account's access token (live ~/.codex/auth.json for the active one, the saved
+~/.codex-accounts/<name>/auth.json for the others) only for chatgpt.com's usage endpoint.
 
 Every page and API call needs the master password (MASTER_PASSWORD). Configuration
 comes from the environment, or from `.env` next to this file; see `.env.example`.
@@ -121,6 +122,9 @@ WINDOWS = {"five_hour": "5-hour", "seven_day": "Weekly",
            "seven_day_opus": "Weekly (Opus)", "seven_day_sonnet": "Weekly (Sonnet)"}
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+CODEX_CLI = os.environ.get("CODEX_ACCOUNT_BIN", str(HOME / ".local/bin/codex-account"))
+CODEX_ACC_DIR = Path(os.environ.get("CODEX_ACCOUNTS_DIR") or HOME / ".codex-accounts")
+CODEX_PRIORITY = [s.strip() for s in os.environ.get("CODEX_PRIORITY", "").split(",") if s.strip()]
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"  # what Codex's /status reads
 CODEX_WINDOWS = {18000: "5-hour", 604800: "Weekly", 2592000: "Monthly"}
 
@@ -129,9 +133,9 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 LIST_RE = re.compile(r"^([* ]) (\S+)\s+(\S+)\s+\[(.*)\]\s*$")
 SECRET_RE = re.compile(
     r"sk-ant-[A-Za-z0-9_-]+"
-    r"|\"(?:accessToken|refreshToken|idToken)\"\s*:\s*\"[^\"]*\""
+    r"|\"(?:accessToken|refreshToken|idToken|access_token|refresh_token|id_token)\"\s*:\s*\"[^\"]*\""
 )
-LOCK = threading.RLock()  # one claude-account invocation / auto-switch decision at a time
+LOCK = threading.RLock()  # one claude-/codex-account invocation / auto-switch decision at a time
 INDEX_HTML = (HERE / "index.html").read_bytes()
 LOGIN_HTML = (HERE / "login.html").read_bytes()
 
@@ -344,16 +348,18 @@ def action_allowed():
 
 # ---------------------------------------------------------------- claude-account + usage
 
-def run(*args):
-    """Run claude-account; return (exit code, stdout, stderr), all redacted."""
+def run(*args, cli=None):
+    """Run claude-account (or codex-account); return (exit code, stdout, stderr), all redacted."""
+    cli = cli or CLI
+    tool = Path(cli).name
     try:
-        p = subprocess.run([CLI, *args], capture_output=True, text=True, timeout=60,
+        p = subprocess.run([cli, *args], capture_output=True, text=True, timeout=60,
                            stdin=subprocess.DEVNULL)
         return p.returncode, redact(p.stdout), redact(p.stderr)
     except subprocess.TimeoutExpired:
-        return 124, "", "claude-account timed out"
+        return 124, "", f"{tool} timed out"
     except OSError as e:
-        return 127, "", f"could not run claude-account: {e.strerror}"
+        return 127, "", f"could not run {tool}: {e.strerror}"
 
 
 def plan_label(plan):
@@ -444,7 +450,7 @@ def parse_ts(iso):
         return None
 
 
-# ---------------------------------------------------------------- Codex (tracking only)
+# ---------------------------------------------------------------- Codex
 
 def codex_window(used, resets_epoch, seconds):
     try:
@@ -457,11 +463,29 @@ def codex_window(used, resets_epoch, seconds):
     return {"u": float(used), "resets_at": resets, "label": label}
 
 
-def read_codex_auth():
-    """Codex's ChatGPT login: (access token if still valid else None, account id or None).
+def list_codex_accounts():
+    code, out, err = run("list", "--json", cli=CODEX_CLI)
+    if code:
+        return {"accounts": [], "error": (err or out).strip() or f"codex-account list failed ({code})"}
+    try:
+        rows = json.loads(out)
+        accounts = [{"name": r["name"], "email": str(r.get("email") or "?"), "plan": str(r.get("plan") or "?"),
+                     "label": str(r.get("plan") or "?").replace("_", " ").title(), "active": r.get("active") is True}
+                    for r in rows if isinstance(r, dict) and NAME_RE.match(str(r.get("name", "")))]
+    except (ValueError, TypeError, KeyError):
+        return {"accounts": [], "error": "codex-account list returned something unexpected"}
+    return {"accounts": accounts, "error": None}
+
+
+def codex_auth_path(name, active):
+    return CODEX_HOME / "auth.json" if name == active else CODEX_ACC_DIR / name / "auth.json"
+
+
+def read_codex_auth(path=None):
+    """A Codex ChatGPT login: (access token if still valid else None, account id or None).
     Codex refreshes the token itself; this never writes or logs it."""
     try:
-        t = json.loads((CODEX_HOME / "auth.json").read_text()).get("tokens") or {}
+        t = json.loads(Path(path or CODEX_HOME / "auth.json").read_text()).get("tokens") or {}
         token, account = t.get("access_token"), t.get("account_id")
         claims = token.split(".")[1]
         exp = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4))).get("exp") or 0
@@ -528,7 +552,9 @@ def _last_codex_reading(path, tail=512 * 1024):
 
 def codex_session_reading(days=14):
     """Codex's own latest rate-limit reading, from the session logs it writes after every
-    model reply: (when, usage) or None. Costs no request."""
+    model reply: (when, usage) or None. Costs no request. The logs don't say which account
+    a reading is for (a thread started on one account moves to the next after a switch),
+    so the caller credits it to the account that was active at that time."""
     day_dirs = sorted((CODEX_HOME / "sessions").glob("[0-9]*/[0-9]*/[0-9]*"), reverse=True)[:days]
     files = []
     for d in day_dirs:
@@ -553,7 +579,11 @@ class AutoSwitcher:
             s = {}
         self.enabled = s.get("enabled", True)
         self.usage = s.get("usage", {})  # name -> {windows, fetched_at, error}
-        self.codex = s.get("codex", {})  # Codex is only tracked, never switched
+        self.codex_enabled = s.get("codex_enabled", True)
+        self.codex_usage = s.get("codex_usage", {})  # name -> {windows, plan, fetched_at, source, error}
+        self.codex_last_switch_at = s.get("codex_last_switch_at", 0)
+        self.codex_last_active = s.get("codex_last_active")
+        self.codex_active_since = s.get("codex_active_since", 0)  # when the active account went live
         self.events = s.get("events", [])[-50:]
         self.last_switch_at = s.get("last_switch_at", 0)
         self.last_active = s.get("last_active")
@@ -563,8 +593,11 @@ class AutoSwitcher:
     def save(self):
         try:
             atomic_write_json(STATE_FILE, {
-                "enabled": self.enabled, "usage": self.usage, "codex": self.codex, "events": self.events[-50:],
-                "last_switch_at": self.last_switch_at, "last_active": self.last_active})
+                "enabled": self.enabled, "usage": self.usage, "events": self.events[-50:],
+                "last_switch_at": self.last_switch_at, "last_active": self.last_active,
+                "codex_enabled": self.codex_enabled, "codex_usage": self.codex_usage,
+                "codex_last_switch_at": self.codex_last_switch_at, "codex_last_active": self.codex_last_active,
+                "codex_active_since": self.codex_active_since})
         except OSError as e:
             log(f"could not save state: {e.strerror}")
 
@@ -573,19 +606,28 @@ class AutoSwitcher:
         self.events = self.events[-50:]
         log(f"[{kind}] {msg}")
 
-    def blocking(self, name, now):
+    def blocking(self, name, now, codex=False):
         """Limit windows of `name` that are at/over THRESHOLD and haven't reset yet."""
         hits = []
-        for key, w in ((self.usage.get(name) or {}).get("windows") or {}).items():
+        usage = self.codex_usage if codex else self.usage
+        for key, w in ((usage.get(name) or {}).get("windows") or {}).items():
             resets = parse_ts(w.get("resets_at"))
             if w["u"] >= THRESHOLD and (resets is None or resets > now):
-                hits.append(f"{name} {WINDOWS.get(key, key)} limit at {w['u']:.0f}%")
+                label = w.get("label") if codex else WINDOWS.get(key, key)
+                hits.append(f"{name} {label or key} limit at {w['u']:.0f}%")
         return hits
 
-    def choose(self, names, active, now):
-        order = [n for n in PRIORITY if n in names] + [n for n in names if n not in PRIORITY]
+    def choose(self, names, active, now, codex=False):
+        prio = CODEX_PRIORITY if codex else PRIORITY
+        order = [n for n in prio if n in names] + [n for n in names if n not in prio]
+        usage = self.codex_usage if codex else self.usage
+        # While the active account has room, never move to one whose usage hasn't been read
+        # yet (no reading isn't room). Once it's full, an unknown account beats staying put.
+        settled = not self.blocking(active, now, codex) if active else False
         for n in order:
-            if not self.blocking(n, now):
+            if settled and n != active and not (usage.get(n) or {}).get("fetched_at"):
+                continue
+            if not self.blocking(n, now, codex):
                 return n
         return active  # every account is near its limit: stay put rather than flip-flop
 
@@ -640,35 +682,81 @@ class AutoSwitcher:
             except RuntimeError as e:
                 u["error"] = str(e)
 
-    def refresh_codex(self, force):
-        c, now = self.codex, time.time()
+    def refresh_codex(self, names, active, force):
+        now = time.time()
+        logins = {n: read_codex_auth(codex_auth_path(n, active)) for n in names}
         seen = codex_session_reading()
-        if seen and seen[0] > (c.get("fetched_at") or 0):
-            c.update(seen[1], fetched_at=seen[0], source="Codex's session log", error=None)
-        # While Codex is in use its log is fresh, so the endpoint is only asked when it's idle.
-        if not force and (now - (c.get("checked_at") or 0) < INACTIVE_POLL - 5
-                          or now - (c.get("fetched_at") or 0) < INACTIVE_POLL - 5
-                          or now < (c.get("retry_at") or 0)):
+        # Only readings written after the active account went live are its own. A reading
+        # without windows (e.g. only a non-Codex limit) says nothing: it mustn't count as fresh,
+        # or the endpoint would never be asked.
+        if active and seen and seen[1].get("windows") and seen[0] > self.codex_active_since + 5:
+            c = self.codex_usage.setdefault(active, {})
+            if seen[0] > (c.get("fetched_at") or 0):
+                c.update(seen[1], fetched_at=seen[0], source="Codex's session log", error=None)
+        for n in names:
+            c = self.codex_usage.setdefault(n, {})
+            # While Codex is in use its log is fresh, so the endpoint is only asked when it's idle.
+            if not force and (now - (c.get("checked_at") or 0) < INACTIVE_POLL - 5
+                              or now - (c.get("fetched_at") or 0) < INACTIVE_POLL - 5
+                              or now < (c.get("retry_at") or 0)):
+                continue
+            c["checked_at"] = now
+            token, account = logins[n]
+            if not token:
+                c["error"] = (("Codex login token expired (Codex renews it when it next runs)" if n == active else
+                               "saved login token expired (it renews once Codex uses this account again)")
+                              + "; showing the last reading") if account else "no ChatGPT login found"
+                continue
+            try:
+                c.update(fetch_codex_usage(token, account), fetched_at=now, source="ChatGPT",
+                         error=None, backoff=None, retry_at=None)
+            except RateLimited as e:
+                c["backoff"] = min((c.get("backoff") or POLL) * 2, MAX_BACKOFF)
+                c["retry_at"] = now + c["backoff"]
+                c["error"] = f"{e}; retrying in {c['backoff'] // 60 or 1} min"
+            except RuntimeError as e:
+                c["error"] = str(e)
+
+    def codex_manual_switch(self, target, names):
+        self.codex_last_active, self.codex_active_since = target, time.time()
+        if self.codex_enabled and self.choose(names, target, time.time(), codex=True) != target:
+            self.codex_enabled = False
+            self.event(f"Codex auto-switch turned off because Codex was switched to '{target}' by hand. "
+                       "Turn it back on to let it manage Codex accounts again.")
+        self.save()
+
+    def tick_codex(self, force):
+        st = list_codex_accounts()
+        if st["error"]:
+            log(f"codex list failed: {st['error']}")
             return
-        c["checked_at"] = now
-        token, account = read_codex_auth()
-        if not token:
-            c["error"] = ("Codex login token expired (Codex renews it when it next runs); showing the last reading"
-                          if account else "Codex isn't signed in with ChatGPT on this machine")
-            return
-        try:
-            c.update(fetch_codex_usage(token, account), fetched_at=now, source="ChatGPT",
-                     error=None, backoff=None, retry_at=None)
-        except RateLimited as e:
-            c["backoff"] = min((c.get("backoff") or POLL) * 2, MAX_BACKOFF)
-            c["retry_at"] = now + c["backoff"]
-            c["error"] = f"{e}; retrying in {c['backoff'] // 60 or 1} min"
-        except RuntimeError as e:
-            c["error"] = str(e)
+        names = [a["name"] for a in st["accounts"]]
+        active = next((a["name"] for a in st["accounts"] if a["active"]), None)
+        if self.codex_last_active and active and active != self.codex_last_active:
+            self.event(f"Codex account changed outside the switcher: {self.codex_last_active} → {active}")
+            self.codex_manual_switch(active, names)
+        if active != self.codex_last_active:
+            self.codex_active_since = time.time()
+        self.codex_last_active = active
+        self.refresh_codex(names, active, force)
+        now = time.time()
+        if self.codex_enabled and active and len(names) > 1:
+            target = self.choose(names, active, now, codex=True)
+            if target != active and now - self.codex_last_switch_at >= COOLDOWN:
+                why = "; ".join(self.blocking(active, now, True)) or f"'{target}' is preferred and has room again"
+                code, out, err = run("use", target, cli=CODEX_CLI)
+                if code == 0:
+                    self.codex_last_switch_at, self.codex_last_active, self.codex_active_since = now, target, now
+                    self.event(f"Codex auto-switched {active} → {target} ({why}).", "switch")
+                else:
+                    self.event(f"Codex auto-switch to '{target}' failed: {(err or out).strip()}", "error")
 
     def tick(self, force=False):
         with LOCK:
-            self.refresh_codex(force)
+            try:
+                self.tick_codex(force)
+            except Exception as e:  # Codex trouble must never stop the Claude side
+                log(f"codex tick crashed: {type(e).__name__}")
             st = list_accounts()
             if st["error"]:
                 log(f"list failed: {st['error']}")
@@ -709,24 +797,31 @@ class AutoSwitcher:
             self.wake.wait(POLL)
             self.wake.clear()
 
-    def decorate(self, st):
+    def windows_view(self, windows, now, labels=None):
+        items = sorted(windows.items()) if labels is None else windows.items()
+        return [{"key": k, "label": (labels or {}).get(k) or w.get("label") or k, "u": w["u"],
+                 "resets_at": w.get("resets_at"), "reset": (parse_ts(w.get("resets_at")) or now + 1) <= now}
+                for k, w in items]
+
+    def decorate(self, st, codex=None):
         now = time.time()
         for a in st["accounts"]:
             u = self.usage.get(a["name"]) or {}
-            a["usage"] = {
-                "windows": [{"key": k, "label": WINDOWS.get(k, k), "u": w["u"], "resets_at": w.get("resets_at"),
-                             "reset": (parse_ts(w.get("resets_at")) or now + 1) <= now}
-                            for k, w in (u.get("windows") or {}).items()],
-                "fetched_at": u.get("fetched_at"), "error": u.get("error")}
+            a["usage"] = {"windows": self.windows_view(u.get("windows") or {}, now, WINDOWS),
+                          "fetched_at": u.get("fetched_at"), "error": u.get("error")}
             a["blocked"] = bool(self.blocking(a["name"], now))
-        c = self.codex
-        st["codex"] = {
-            "plan": c.get("plan"), "label": (c.get("plan") or "").replace("_", " ").title() or None,
-            "email": c.get("email"), "limit_reached": bool(c.get("limit_reached")),
-            "windows": [{"key": k, "label": w.get("label") or "Limit", "u": w["u"], "resets_at": w.get("resets_at"),
-                         "reset": (parse_ts(w.get("resets_at")) or now + 1) <= now}
-                        for k, w in sorted((c.get("windows") or {}).items())],
-            "fetched_at": c.get("fetched_at"), "source": c.get("source"), "error": c.get("error")}
+        codex = codex if codex is not None else list_codex_accounts()
+        for a in codex["accounts"]:
+            c = self.codex_usage.get(a["name"]) or {}
+            a["limit_reached"] = bool(c.get("limit_reached"))
+            a["usage"] = {"windows": self.windows_view(c.get("windows") or {}, now),
+                          "fetched_at": c.get("fetched_at"), "source": c.get("source"), "error": c.get("error")}
+            a["blocked"] = bool(self.blocking(a["name"], now, codex=True))
+        if not codex["error"] and codex["accounts"] and not any(a["active"] for a in codex["accounts"]):
+            codex["error"] = ("Codex is signed in with a login that isn't saved (or not signed in). "
+                              "On the VM: codex-account save <name>")
+        st["codex"] = {**codex, "auto": {"enabled": self.codex_enabled,
+                                         "priority": CODEX_PRIORITY or [a["name"] for a in codex["accounts"]]}}
         st["auto"] = {"enabled": self.enabled, "threshold": THRESHOLD, "priority": PRIORITY,
                       "poll": POLL, "last_check": self.last_check or None,
                       "events": list(reversed(self.events[-8:]))}
@@ -972,7 +1067,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        routes = ("/api/login", "/api/logout", "/api/logout-all", "/api/use", "/api/auto", "/api/check")
+        routes = ("/api/login", "/api/logout", "/api/logout-all", "/api/use", "/api/auto", "/api/check",
+                  "/api/codex/use", "/api/codex/auto")
         if path not in routes:
             self._request_received()
             return self._json(404, {"ok": False, "output": "not found"})
@@ -1000,17 +1096,23 @@ class Handler(BaseHTTPRequestHandler):
                               headers=[("Retry-After", "2")])
         if path == "/api/use":
             return self._use(body.get("name"))
-        if path == "/api/auto":
+        if path == "/api/codex/use":
+            return self._codex_use(body.get("name"))
+        if path in ("/api/auto", "/api/codex/auto"):
             enabled = body.get("enabled")
             if not isinstance(enabled, bool):
                 return self._json(400, {"ok": False, "output": "enabled must be true/false"})
+            what = "Codex auto-switch" if path == "/api/codex/auto" else "Auto-switch"
             with LOCK:
-                AUTO.enabled = enabled
-                AUTO.event(f"Auto-switch turned {'on' if enabled else 'off'}.")
+                if path == "/api/codex/auto":
+                    AUTO.codex_enabled = enabled
+                else:
+                    AUTO.enabled = enabled
+                AUTO.event(f"{what} turned {'on' if enabled else 'off'}.")
                 AUTO.save()
             if enabled:
                 AUTO.tick(force=True)
-            return self._json(200, {"ok": True, "output": f"Auto-switch is {'on' if enabled else 'off'}.",
+            return self._json(200, {"ok": True, "output": f"{what} is {'on' if enabled else 'off'}.",
                                     **snapshot()})
         AUTO.tick(force=True)  # /api/check
         return self._json(200, {"ok": True, "output": "Usage refreshed.", **snapshot()})
@@ -1039,6 +1141,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"ok": False, "output": "Wrong password."})
         finally:
             LOGIN_SLOTS.release()
+
+    def _codex_use(self, name):
+        if not isinstance(name, str) or not NAME_RE.match(name):
+            return self._json(400, {"ok": False, "output": "invalid account name"})
+        with LOCK:
+            before = list_codex_accounts()
+            if before["error"]:
+                return self._json(500, {"ok": False, "output": before["error"], **AUTO.decorate(list_accounts(), before)})
+            names = [a["name"] for a in before["accounts"]]
+            if name not in names:
+                return self._json(400, {"ok": False, "output": f"no saved Codex account '{name}'",
+                                        **AUTO.decorate(list_accounts(), before)})
+            active = next((a["name"] for a in before["accounts"] if a["active"]), None)
+            code, out, err = run("use", name, cli=CODEX_CLI)
+            if code == 0 and active != name:
+                AUTO.codex_last_switch_at = time.time()
+                AUTO.event(f"Codex switched {active or '(unsaved login)'} → {name} by hand.", "switch")
+                AUTO.codex_manual_switch(name, names)
+            st = AUTO.decorate(list_accounts())
+        self.log_message('codex switch to "%s": exit %d', name, code)
+        output = "\n".join(s for s in (out.strip(), err.strip()) if s) or f"exit code {code}"
+        return self._json(200 if code == 0 else 500, {"ok": code == 0, "output": output, **st})
 
     def _use(self, name):
         if not isinstance(name, str) or not NAME_RE.match(name):
@@ -1102,7 +1226,8 @@ def main():
     log(f"claude-account-ui: local http://{BIND}:{PORT}/"
         + (f"; public listener {BIND}:{PUBLIC_PORT} for {', '.join(sorted(PUBLIC_HOSTS))}" if PUBLIC_PORT else "")
         + f"; auto-switch {'on' if AUTO.enabled else 'off'} at {THRESHOLD:g}%, "
-        + f"order {','.join(PRIORITY) or '(list order)'}")
+        + f"order {','.join(PRIORITY) or '(list order)'}; "
+        + f"codex auto-switch {'on' if AUTO.codex_enabled else 'off'}, order {','.join(CODEX_PRIORITY) or '(list order)'}")
     try:
         local.serve_forever()
     except KeyboardInterrupt:

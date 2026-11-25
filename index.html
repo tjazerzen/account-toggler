@@ -83,7 +83,7 @@
   <div class="head">
     <div>
       <h1>Claude account</h1>
-      <p class="sub">Which subscription Claude Code / T3 Code uses on this VM, and how much Codex has left.</p>
+      <p class="sub">Which subscription Claude Code / T3 Code uses on this VM, and which ChatGPT account Codex uses.</p>
     </div>
     <button class="ghost" id="logout" type="button">Sign out</button>
   </div>
@@ -104,6 +104,13 @@
   <div id="accounts"><p class="muted">Loading…</p></div>
 
   <h2>Codex</h2>
+  <div class="panel" id="codex-auto">
+    <div class="panel-head">
+      <span class="panel-title"><span class="dot" id="codex-auto-dot"></span><span id="codex-auto-state">Codex auto-switch</span></span>
+      <button class="ghost" id="codex-auto-toggle" type="button" disabled>…</button>
+    </div>
+    <p id="codex-auto-desc"></p>
+  </div>
   <div id="codex"><p class="muted">Loading…</p></div>
 
   <div id="result"><strong></strong><pre></pre></div>
@@ -186,25 +193,46 @@
   }
 
   function renderCodex(c, threshold) {
+    const auto = c.auto || {};
+    const prio = (auto.priority || []).join(" → ");
+    $("#codex-auto-dot").className = "dot" + (auto.enabled ? " on" : "");
+    $("#codex-auto-state").textContent = auto.enabled ? "Codex auto-switch is on" : "Codex auto-switch is off";
+    const t = $("#codex-auto-toggle");
+    t.textContent = auto.enabled ? "Turn off" : "Turn on";
+    t.disabled = busy;
+    $("#codex-auto-desc").textContent = (auto.enabled
+      ? `At ${threshold}% of any Codex limit it moves Codex to the next account (order: ${prio}) and back once the limit resets.`
+      : `Codex stays on the account you pick. Turn it on to switch at ${threshold}% of a limit (order: ${prio}).`) +
+      " Start a new Codex thread in T3 after a switch.";
+
     const box = $("#codex");
     box.replaceChildren();
-    const card = el("div", "card");
-    const top = el("div", "top");
-    const info = el("div", "info");
-    const name = el("div", "name", "Codex");
-    if (c.label) {
-      const plan = el("span", "pill", c.label);
-      plan.title = c.plan;
+    const accs = c.accounts || [];
+    if (c.error) box.append(el("p", "muted", c.error));
+    else if (!accs.length) box.append(el("p", "muted", "No saved Codex accounts. Use `codex-account login <name>` on the VM."));
+    for (const a of accs) {
+      const card = el("div", "card" + (a.active ? " active" : ""));
+      const top = el("div", "top");
+      const info = el("div", "info");
+      const name = el("div", "name", a.name);
+      const plan = el("span", "pill", a.label);
+      plan.title = a.plan;
       name.append(plan);
+      if (a.limit_reached) name.append(el("span", "pill warn", "limit reached"));
+      else if (a.blocked) name.append(el("span", "pill warn", `≥ ${threshold}%`));
+      info.append(name, el("div", "email", a.email));
+      top.append(info);
+      if (a.active) top.append(el("span", "badge", "● Active"));
+      else {
+        const b = el("button", null, "Switch");
+        b.type = "button";
+        b.disabled = busy;
+        b.addEventListener("click", () => switchCodex(a.name, b));
+        top.append(b);
+      }
+      card.append(top, usageBox(a.usage || {}, threshold, true));
+      box.append(card);
     }
-    if (c.limit_reached) name.append(el("span", "pill warn", "limit reached"));
-    info.append(name);
-    if (c.email) info.append(el("div", "email", c.email));
-    const badge = el("span", "badge quiet", "Tracking only");
-    badge.title = "Codex has one login on this VM; nothing here switches it.";
-    top.append(info, badge);
-    card.append(top, usageBox(c, threshold, false));
-    box.append(card);
   }
 
   function render(data) {
@@ -313,6 +341,15 @@
     if (d) showResult(!!d.ok, d.ok ? `Switched to “${name}”` : `Switch to “${name}” failed`, d.output);
   }
 
+  async function switchCodex(name, btn) {
+    const d = await post("/api/codex/use", { name }, { btn, text: "Switching…" });
+    if (d) showResult(!!d.ok, d.ok ? `Codex switched to “${name}”` : `Codex switch to “${name}” failed`, d.output);
+  }
+  $("#codex-auto-toggle").addEventListener("click", async () => {
+    const on = !(last && last.codex && last.codex.auto && last.codex.auto.enabled);
+    const d = await post("/api/codex/auto", { enabled: on }, { btn: $("#codex-auto-toggle"), text: "…" });
+    if (d && !d.ok) showResult(false, "Could not change Codex auto-switch", d.output);
+  });
   $("#auto-toggle").addEventListener("click", async () => {
     const on = !(last && last.auto && last.auto.enabled);
     const d = await post("/api/auto", { enabled: on }, { btn: $("#auto-toggle"), text: "…" });
